@@ -1,9 +1,9 @@
 /**
  * Where a condition job's rows come from.
  *
- * WAVE 1 runs `condition_sql` against auto-email's own D1. WAVE 3 will bind the
- * read-only `sodimo-prod` ERP mirror as `env.ERP` and route condition jobs
- * there; `resolveDataSource` is the single place that changes.
+ * Each job explicitly chooses auto-email's own D1 or the production ERP mirror.
+ * There is deliberately no implicit fallback: a missing/unknown source fails
+ * rather than querying the wrong database.
  *
  * D1 has NO read-only binding mode — `env.DB`/`env.ERP` are ordinary read/WRITE
  * handles. `assertReadOnlySql` is therefore load-bearing for write-prevention,
@@ -11,7 +11,7 @@
  * Worker's ERP guard.)
  */
 import { MAX_CONDITION_ROWS } from "../config.js";
-import type { DataRow, Env } from "../types.js";
+import type { DataRow, DataSourceName, Env } from "../types.js";
 
 export interface DataSource {
   readonly name: string;
@@ -19,7 +19,7 @@ export interface DataSource {
 }
 
 const FORBIDDEN =
-  /\b(insert|update|delete|drop|alter|create|replace|attach|detach|pragma|vacuum|reindex|truncate|begin|commit|rollback|savepoint)\b/i;
+  /\b(insert|update|delete|drop|alter|create|attach|detach|pragma|vacuum|reindex|truncate|begin|commit|rollback|savepoint)\b|\breplace\s+into\b/i;
 
 export class ConditionSqlError extends Error {
   constructor(message: string) {
@@ -66,11 +66,11 @@ function d1Source(name: string, db: D1Database): DataSource {
   };
 }
 
-export function resolveDataSource(env: Env): DataSource {
-  // WAVE 3 SEAM. Merely adding the ERP binding must NOT silently redirect
-  // existing condition jobs, so the branch is written but not taken: routing
-  // will become a per-job column (`source`) decided when the mirror lands.
-  //   if (job.source === "erp" && env.ERP) return d1Source("erp", env.ERP);
-  void env.ERP;
-  return d1Source("own", env.DB);
+export function resolveDataSource(env: Env, source: DataSourceName): DataSource {
+  if (source === "own") return d1Source("own", env.DB);
+  if (source === "erp") {
+    if (!env.ERP) throw new ConditionSqlError("ERP binding is missing");
+    return d1Source("erp", env.ERP);
+  }
+  throw new ConditionSqlError(`unknown data source: ${String(source)}`);
 }

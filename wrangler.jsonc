@@ -25,10 +25,16 @@
       // Ignored by the vitest workers pool (tests get a fresh local D1).
       "database_id": "febac9c7-596b-4a7d-9ce4-212ec0d4c20d",
       "migrations_dir": "migrations"
+    },
+    {
+      // Production ERP mirror. This binding is LOGICALLY read-only: D1 has no
+      // read-only binding mode, so every query must keep passing through
+      // src/lib/datasource.ts#assertReadOnlySql. No migrations_dir — the frozen
+      // sodimo/etl pipeline is the sole owner of this database's schema/data.
+      "binding": "ERP",
+      "database_name": "sodimo-prod",
+      "database_id": "c7552dfa-d55e-4a29-9510-9ab25109e952"
     }
-    // WAVE 3 SEAM: the read-only ERP mirror lands here as a SECOND binding
-    // named ERP (database_name "sodimo-prod"). See src/lib/datasource.ts.
-    // Never give it a migrations_dir — the NAS ETL owns that database.
   ],
 
   // The Worker cron tick. Job rows carry their OWN cron strings; this tick is

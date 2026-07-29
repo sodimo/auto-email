@@ -74,13 +74,14 @@ export async function testListId(): Promise<number> {
   return row!.id;
 }
 
-export async function templateId(name = "rapport-quotidien"): Promise<number> {
+export async function templateId(name = "test-generic"): Promise<number> {
   const row = await env.DB.prepare("SELECT id FROM templates WHERE name = ?").bind(name).first<{ id: number }>();
   return row!.id;
 }
 
 export async function insertJob(overrides: Partial<Job> & { name: string }): Promise<Job> {
   const job = {
+    display_name: null,
     kind: "digest" as const,
     enabled: 1,
     schedule: "0 6 * * *",
@@ -88,14 +89,20 @@ export async function insertJob(overrides: Partial<Job> & { name: string }): Pro
     recipient_list_id: await testListId(),
     condition_sql: null,
     dedupe_strategy: "per_run" as const,
+    source: "own" as const,
+    preset: "custom" as const,
     ...overrides,
   };
   const row = await env.DB.prepare(
-    `INSERT INTO jobs (name, kind, enabled, schedule, template_id, recipient_list_id, condition_sql, dedupe_strategy)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    `INSERT INTO jobs (
+       name, display_name, kind, enabled, schedule, template_id,
+       recipient_list_id, condition_sql, dedupe_strategy, source, preset
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   )
     .bind(
       job.name,
+      job.display_name,
       job.kind,
       job.enabled,
       job.schedule,
@@ -103,6 +110,8 @@ export async function insertJob(overrides: Partial<Job> & { name: string }): Pro
       job.recipient_list_id,
       job.condition_sql,
       job.dedupe_strategy,
+      job.source,
+      job.preset,
     )
     .first<{ id: number }>();
   return { id: row!.id, ...job } as Job;

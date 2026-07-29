@@ -16,6 +16,7 @@ import { dueSlots, isoMinute } from "./lib/cron.js";
 import { resolveDataSource } from "./lib/datasource.js";
 import { loadEnabledJobs, loadJob, loadRecipients, loadSettings, loadTemplate } from "./lib/db.js";
 import { enqueue } from "./lib/enqueue.js";
+import { assertErpReady } from "./lib/erp.js";
 import { guardRun } from "./lib/guard.js";
 import { buildRowsTableHtml, buildRowsText, frenchDate, render } from "./lib/render.js";
 import type { DataRow, Env, Job, JobResult, Settings } from "./types.js";
@@ -52,7 +53,12 @@ function emptyResult(job: Job): JobResult {
 
 function baseVars(job: Job, rows: DataRow[], now: Date): Record<string, unknown> {
   return {
+    // A one-row aggregate (the standard digest shape) exposes its named
+    // columns directly to the friendly template editor. Standard variables
+    // come afterwards and cannot be shadowed by ERP column names.
+    ...(rows.length === 1 ? rows[0] : {}),
     job_name: job.name,
+    job_label: job.display_name ?? job.name,
     date_fr: frenchDate(now),
     generated_at: `${now.toISOString().slice(0, 19)}Z`,
     dashboard_url: DASHBOARD_URL,
@@ -111,7 +117,8 @@ export async function runJob(env: Env, settings: Settings, job: Job, trigger: Tr
 
   let rows: DataRow[] = [];
   if (job.condition_sql) {
-    rows = await resolveDataSource(env).query(job.condition_sql);
+    if (job.source === "erp") await assertErpReady(env.ERP, now);
+    rows = await resolveDataSource(env, job.source).query(job.condition_sql);
   }
   result.rowCount = rows.length;
 

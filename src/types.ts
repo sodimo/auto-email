@@ -2,16 +2,18 @@
  *  Cloudflare auth, and CI must typecheck without any credentials. */
 export interface Env {
   DB: D1Database;
+  /** Production sodimo-prod ERP mirror. Logically read-only; see datasource.ts. */
+  ERP: D1Database;
   /** Strato mailbox password for rapports@sodimo.eu. `wrangler secret put`. */
   STRATO_SMTP_PASSWORD: string;
   /** Shared secret required by every fetch() endpoint. `wrangler secret put`. */
   TRIGGER_TOKEN: string;
-  /** WAVE 3 SEAM: read-only sodimo-prod ERP mirror. Absent in Wave 1. */
-  ERP?: D1Database;
 }
 
 export type JobKind = "digest" | "condition";
 export type DedupeStrategy = "per_run" | "per_day" | "per_row";
+export type DataSourceName = "own" | "erp";
+export type JobPreset = "custom" | "sales_daily" | "overdue_30";
 export type SendStatus = "pending" | "sent" | "failed" | "suppressed" | "skipped_test_mode";
 export type OutboxStatus = "pending" | "sent" | "failed" | "cancelled";
 export type AppendStatus = "appended" | "failed" | "skipped";
@@ -19,6 +21,7 @@ export type AppendStatus = "appended" | "failed" | "skipped";
 export interface Job {
   id: number;
   name: string;
+  display_name: string | null;
   kind: JobKind;
   enabled: number;
   schedule: string;
@@ -26,6 +29,8 @@ export interface Job {
   recipient_list_id: number;
   condition_sql: string | null;
   dedupe_strategy: DedupeStrategy;
+  source: DataSourceName;
+  preset: JobPreset;
 }
 
 export interface Template {
@@ -34,6 +39,7 @@ export interface Template {
   subject_fr: string;
   body_html: string;
   body_text: string;
+  body_source: string | null;
 }
 
 export interface Recipient {

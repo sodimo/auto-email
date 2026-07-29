@@ -60,7 +60,8 @@ describe("GET /healthz", () => {
   it("reports the queue backlog, which is how an SMTP outage shows up", async () => {
     const { env } = await import("cloudflare:test");
     const { enqueueDueJobs } = await import("../src/runner.js");
-    await env.DB.prepare("UPDATE jobs SET enabled = 1 WHERE name = 'rapport-nightly'").run();
+    const { insertJob } = await import("./helpers.js");
+    await insertJob({ name: "health-backlog", enabled: 1, schedule: "0 6 * * *" });
     await enqueueDueJobs(env, new Date("2026-07-29T06:00:00Z").getTime());
 
     const response = await SELF.fetch("https://auto-email.test/healthz", { headers: auth() });

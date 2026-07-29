@@ -9,7 +9,7 @@ export async function loadSettings(db: D1Database): Promise<Settings> {
 }
 
 const JOB_COLUMNS =
-  "id, name, kind, enabled, schedule, template_id, recipient_list_id, condition_sql, dedupe_strategy";
+  "id, name, display_name, kind, enabled, schedule, template_id, recipient_list_id, condition_sql, dedupe_strategy, source, preset";
 
 export async function loadEnabledJobs(db: D1Database): Promise<Job[]> {
   const { results } = await db
@@ -30,7 +30,7 @@ export async function loadJob(db: D1Database, idOrName: string): Promise<Job | n
 
 export async function loadTemplate(db: D1Database, templateId: number): Promise<Template | null> {
   return await db
-    .prepare("SELECT id, name, subject_fr, body_html, body_text FROM templates WHERE id = ?")
+    .prepare("SELECT id, name, subject_fr, body_html, body_text, body_source FROM templates WHERE id = ?")
     .bind(templateId)
     .first<Template>();
 }

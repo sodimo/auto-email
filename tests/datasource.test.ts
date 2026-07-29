@@ -20,6 +20,7 @@ describe("assertReadOnlySql", () => {
       "DELETE FROM test_invoices",
       "UPDATE settings SET value = 'off'",
       "INSERT INTO jobs (name) VALUES ('x')",
+      "WITH x AS (SELECT 1) REPLACE INTO settings (key, value) VALUES ('x', 'y')",
       "DROP TABLE send_log",
       "PRAGMA table_list",
       "ATTACH DATABASE 'x' AS y",
@@ -35,6 +36,7 @@ describe("assertReadOnlySql", () => {
 
   it("does not trip over column names that merely contain a keyword", () => {
     expect(() => assertReadOnlySql("SELECT updated_at, created_at FROM jobs")).not.toThrow();
+    expect(() => assertReadOnlySql("SELECT replace('a-b', '-', ' ') AS label")).not.toThrow();
   });
 
   it("sees through comments used to smuggle a second statement", () => {
@@ -43,13 +45,23 @@ describe("assertReadOnlySql", () => {
 });
 
 describe("resolveDataSource", () => {
-  it("reads auto-email's own D1 in Wave 1", async () => {
-    const source = resolveDataSource(env);
+  it("routes explicitly to auto-email's own D1", async () => {
+    const source = resolveDataSource(env, "own");
     expect(source.name).toBe("own");
     expect(await source.query("SELECT key FROM settings WHERE key = 'test_mode'")).toEqual([{ key: "test_mode" }]);
   });
 
+  it("routes explicitly to the ERP binding without a write path", async () => {
+    await env.ERP.prepare("INSERT INTO test_erp_rows (id, label) VALUES (1, 'ERP')").run();
+    const source = resolveDataSource(env, "erp");
+    expect(source.name).toBe("erp");
+    expect(await source.query("SELECT id, label FROM test_erp_rows")).toEqual([{ id: 1, label: "ERP" }]);
+  });
+
   it("enforces the read-only guard on the way through", async () => {
-    await expect(resolveDataSource(env).query("DELETE FROM send_log")).rejects.toThrow(ConditionSqlError);
+    await expect(resolveDataSource(env, "own").query("DELETE FROM send_log")).rejects.toThrow(ConditionSqlError);
+    await expect(resolveDataSource(env, "erp").query("DELETE FROM test_erp_rows")).rejects.toThrow(
+      ConditionSqlError,
+    );
   });
 });
