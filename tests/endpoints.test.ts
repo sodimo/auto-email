@@ -117,7 +117,7 @@ describe("POST /trigger/:jobId", () => {
   });
 
   it("404s an unknown route for an authenticated caller", async () => {
-    const response = await SELF.fetch("https://auto-email.test/admin", { headers: auth() });
+    const response = await SELF.fetch("https://auto-email.test/no-such-route", { headers: auth() });
     expect(response.status).toBe(404);
   });
 });

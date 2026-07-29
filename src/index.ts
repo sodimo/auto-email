@@ -1,6 +1,7 @@
 /**
- * Worker entry. Three surfaces, no UI (that is Wave 2, at auto-email.sodimo.eu
- * behind Cloudflare Access):
+ * Worker entry. Human and automation surfaces share the same fail-closed auth:
+ *   GET  /                    French admin UI
+ *   /api/admin/*              admin CRUD + manual tests
  *   scheduled()             the cron tick: enqueue what is due, then drain a batch
  *   POST /trigger/:jobId    enqueue one job now and drain, same code path as cron
  *   POST /drain             drain the outbox without enqueueing anything
@@ -10,8 +11,11 @@
  * anonymous surface at all: an unauthenticated request cannot even distinguish
  * a missing route from a wrong token.
  */
+import { handleAdminApi } from "./admin/routes.js";
+import { adminPage } from "./admin/view.js";
 import { loadSettings } from "./lib/db.js";
 import { drainOutbox } from "./lib/drain.js";
+import { ErpNotReadyError } from "./lib/erp.js";
 import { isKillSwitchEngaged, isTestMode, TEST_MODE_ALLOWLIST } from "./lib/guard.js";
 import { enqueueDueJobs, runJobById } from "./runner.js";
 import type { Env } from "./types.js";
@@ -26,10 +30,14 @@ const REQUIRED_SETTINGS = [
   "ehlo_hostname",
 ];
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, extraHeaders: HeadersInit = {}): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...extraHeaders,
+    },
   });
 }
 
@@ -52,15 +60,55 @@ function presentedToken(request: Request): string {
   const header = request.headers.get("x-trigger-token");
   if (header) return header;
   const auth = request.headers.get("authorization") ?? "";
-  return auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
+  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7);
+  if (auth.toLowerCase().startsWith("basic ")) {
+    try {
+      const decoded = atob(auth.slice(6));
+      const separator = decoded.indexOf(":");
+      if (separator < 0 || decoded.slice(0, separator).toLowerCase() !== "sodimo") return "";
+      return decoded.slice(separator + 1);
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 async function authorize(request: Request, env: Env): Promise<Response | null> {
   if (!env.TRIGGER_TOKEN) return json({ error: "TRIGGER_TOKEN secret is not set" }, 503);
   if (!(await secretsMatch(presentedToken(request), env.TRIGGER_TOKEN))) {
-    return json({ error: "unauthorized" }, 401);
+    return json(
+      { error: "unauthorized" },
+      401,
+      { "www-authenticate": 'Basic realm="Sodimo - Envois automatiques", charset="UTF-8"' },
+    );
   }
   return null;
+}
+
+function adminHtml(): Response {
+  const nonce = crypto.randomUUID();
+  return new Response(adminPage(nonce), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store, max-age=0",
+      "content-security-policy": [
+        "default-src 'none'",
+        `script-src 'nonce-${nonce}'`,
+        `style-src 'nonce-${nonce}'`,
+        "style-src-attr 'unsafe-inline'",
+        "connect-src 'self'",
+        "img-src 'self' data:",
+        "base-uri 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+      ].join("; "),
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "permissions-policy": "camera=(), microphone=(), geolocation=()",
+    },
+  });
 }
 
 async function healthz(env: Env): Promise<Response> {
@@ -68,6 +116,7 @@ async function healthz(env: Env): Promise<Response> {
   let settings: Awaited<ReturnType<typeof loadSettings>> = {};
   let enabledJobs: number | null = null;
   let queue: { pending: number; failed: number; oldest: string | null } | null = null;
+  let erp: "reachable" | "unreachable" = "unreachable";
 
   try {
     settings = await loadSettings(env.DB);
@@ -85,6 +134,12 @@ async function healthz(env: Env): Promise<Response> {
     queue = { pending: outbox?.pending ?? 0, failed: outbox?.failed ?? 0, oldest: outbox?.oldest ?? null };
   } catch (cause) {
     problems.push(`D1 unreachable: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
+  try {
+    await env.ERP.prepare("SELECT 1 AS ok").first();
+    erp = "reachable";
+  } catch (cause) {
+    problems.push(`ERP D1 unreachable: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
 
   for (const key of REQUIRED_SETTINGS) {
@@ -108,6 +163,7 @@ async function healthz(env: Env): Promise<Response> {
         (settings.imap_append ?? "").trim().toLowerCase() === "on"
           ? `${settings.imap_host}:${settings.imap_port}`
           : "off",
+      erp,
     },
     problems.length === 0 ? 200 : 503,
   );
@@ -119,6 +175,17 @@ export default {
     if (denied) return denied;
 
     const url = new URL(request.url);
+
+    if (url.pathname === "/" || url.pathname === "/admin") {
+      if (request.method !== "GET") return json({ error: "use GET" }, 405);
+      return adminHtml();
+    }
+    if (url.pathname === "/favicon.ico") {
+      return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+    }
+
+    const admin = await handleAdminApi(request, env, url);
+    if (admin) return admin;
 
     if (request.method === "GET" && url.pathname === "/healthz") {
       return await healthz(env);
@@ -140,7 +207,10 @@ export default {
         return json({ queued: queued.result, drained: await drainOutbox(env) });
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
-        return json({ job: jobId, error: message }, message.startsWith("job not found") ? 404 : 500);
+        return json(
+          { job: jobId, error: message },
+          message.startsWith("job not found") ? 404 : cause instanceof ErpNotReadyError ? 503 : 500,
+        );
       }
     }
     if (trigger) return json({ error: "use POST" }, 405);
