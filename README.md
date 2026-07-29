@@ -5,8 +5,9 @@ Cloudflare Worker via Strato SMTP, with a copy filed in the mailbox's Sent
 folder over IMAP. See [SPEC.md](SPEC.md) for the contract and
 [CLAUDE.md](CLAUDE.md) if you are an agent picking this up.
 
-**Wave 1 sends only to `thomas@leger.run` and `tombionic@gmail.com`.** Every
-other recipient is refused in code. Nothing here can email the Sodimo team yet.
+**Test mode is forced:** sends can reach only `thomas@leger.run` and
+`tombionic@gmail.com`. Every other recipient is refused in code, including
+addresses entered in the admin UI.
 
 ## Develop
 
@@ -37,7 +38,7 @@ npx wrangler d1 migrations apply auto-email --local
 ## Deploy
 
 Nothing deploys from a laptop; there are no Cloudflare credentials here on
-purpose. Both workflows use the org-level `CLOUDFLARE_API_TOKEN` /
+purpose. The workflows use the org-level `CLOUDFLARE_API_TOKEN` /
 `CLOUDFLARE_ACCOUNT_ID` secrets.
 
 1. **Set the trigger token** (once, any random 32 bytes):
@@ -67,13 +68,28 @@ purpose. Both workflows use the org-level `CLOUDFLARE_API_TOKEN` /
    Push-to-main auto-deploy stays off until you opt in with
    `gh variable set DEPLOY_ENABLED --body true`.
 
+4. **Attach the custom domain** (one-time, idempotent):
+
+   ```sh
+   gh workflow run attach-domain.yml -R sodimo/auto-email
+   ```
+
+   Then create the Cloudflare Access application manually as described in
+   [OPERATIONS.md](OPERATIONS.md). Do not use locally authenticated wrangler for
+   any account operation; that login is not Sodimo's.
+
 ## Operate
 
-Every endpoint needs the token:
+Open `https://auto-email.sodimo.eu/` (or the workers.dev URL before domain
+attachment). Browser authentication uses username `sodimo` and the
+`TRIGGER_TOKEN` value as password. The French UI manages sendings, schedules,
+templates, recipient lists, history and the kill switch.
+
+Automation can use the same token without Basic auth:
 
 ```sh
 TOKEN=...                       # the TRIGGER_TOKEN value
-BASE=https://auto-email.<subdomain>.workers.dev   # Wave 2: https://auto-email.sodimo.eu
+BASE=https://auto-email.sodimo.workers.dev
 
 curl -s -H "X-Trigger-Token: $TOKEN" "$BASE/healthz"
 curl -s -X POST -H "X-Trigger-Token: $TOKEN" "$BASE/trigger/rapport-nightly"
@@ -91,15 +107,11 @@ both every five minutes.
 
 ### Switches
 
-```sh
-npx wrangler d1 execute auto-email --remote \
-  --command "UPDATE settings SET value='on' WHERE key='kill_switch'"   # stop everything
-```
-
 `kill_switch` fails closed: anything other than `off` (including a missing row)
 means engaged, and it **holds** the queue rather than discarding it — turning it
-back off resumes where it stopped. Turning `test_mode` off does nothing in
-Wave 1; the allowlist is enforced in code.
+back off resumes where it stopped. Use the prominent switch in **Sécurité**;
+do not operate production D1 through a laptop's personal wrangler login.
+Turning `test_mode` off in D1 does nothing while the code-level guard is forced.
 
 Other knobs worth knowing: `drain_batch_size` (default 10, capped at 25),
 `imap_append` (`on`/`off` for Sent copies), `sent_folder_override` (empty =
@@ -108,15 +120,7 @@ discover the `\Sent` mailbox), `smtp_username` (empty = authenticate as
 
 ### What went out
 
-```sh
-npx wrangler d1 execute auto-email --remote \
-  --command "SELECT sent_at, recipient, status, append_status, smtp_response FROM send_log ORDER BY id DESC LIMIT 20"
-```
-
-A backlog means SMTP is unreachable — `/healthz` reports `outbox.pending` and
-the age of the oldest queued message:
-
-```sh
-npx wrangler d1 execute auto-email --remote \
-  --command "SELECT status, COUNT(*), MAX(last_error) FROM outbox GROUP BY status"
-```
+Use **Historique** in the UI. It displays delivery and Sent-folder append as
+separate outcomes, including SMTP/IMAP responses and failure details.
+`/healthz` reports `outbox.pending` and the age of the oldest queued message;
+a growing backlog indicates that SMTP cannot currently be reached.

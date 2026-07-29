@@ -10,7 +10,7 @@ rules are not negotiable. EXTENDING.md walks one new job end to end.
 Node is not on `PATH` on this NixOS host. Get it from the store, e.g.:
 
 ```sh
-export PATH=/nix/store/*-nodejs-24.18.0/bin:$PATH
+export PATH="$(ls -d /nix/store/*-nodejs-24.18.0/bin | head -1):$PATH"
 ```
 
 - `npm run check` — `tsc --noEmit` (typechecks `src/`, `tests/`, `vendor/`)
@@ -29,7 +29,7 @@ create resources from here**. `bootstrap.yml` and `deploy.yml` do that in CI.
   ledger and the guard in one move. New sending features go *through* them.
 - **`src/lib/guard.ts` is the only place that decides who may be written to.**
   `TEST_MODE_ALLOWLIST` is code, not data, and `config.ts#FORCE_TEST_MODE` keeps
-  it in force over the settings row for all of Wave 1. Do not widen either to
+  it in force over the settings row. Do not widen either to
   "make testing easier" — that is exactly what they exist to prevent. The guard
   runs at enqueue AND at drain; keep it that way.
 - Both switches fail closed. Absent or unrecognised value ⇒ kill switch engaged,
@@ -53,6 +53,7 @@ create resources from here**. `bootstrap.yml` and `deploy.yml` do that in CI.
 
 ```
 src/index.ts          fetch (/trigger, /drain, /healthz) + scheduled
+src/admin/            authenticated French UI, CRUD, friendly schedules/templates
 src/runner.ts         due-job selection, fan-out, per-recipient ENQUEUE
 src/config.ts         TICK_MINUTES, FORCE_TEST_MODE, batch and retry limits
 src/types.ts          Env (hand-written — CI typechecks without CF creds) + rows
@@ -63,16 +64,18 @@ src/lib/drain.ts      CHOKE POINT 2: guard → build → SMTP → IMAP → settl
 src/lib/mailer.ts     MailTransport/MailSession seam + buildMessage
 src/lib/imap-append.ts hand-rolled IMAP APPEND to the discovered \Sent folder
 src/lib/render.ts     {{var}} / {{{var}}} + row table builders
-src/lib/db.ts         typed reads; src/lib/datasource.ts  condition SQL + ERP seam
+src/lib/db.ts         typed reads; src/lib/datasource.ts source routing + SQL guard
+src/lib/erp.ts        production-mirror completeness/freshness gate
+src/lib/job-presets.ts canonical sales-digest and overdue-payment ERP queries
 vendor/worker-mailer/ patched SMTP client (MIT, see its README)
-migrations/           0001 schema, 0002 seed
+migrations/           0001 schema, 0002 seed, 0003 Wave 2 jobs/admin metadata
 ```
 
 ## Sharp edges
 
-- **`wrangler.jsonc` ships a placeholder `database_id`.** `bootstrap.yml`
-  resolves the real uuid and commits it. `deploy.yml` refuses to deploy while
-  the placeholder is present.
+- **The two D1 bindings have different ownership.** Migrations apply only to
+  `DB` (`auto-email`). `ERP` is `sodimo-prod`; the frozen `sodimo/etl` owns its
+  schema and data. Never add `migrations_dir` to the ERP binding or write to it.
 - **The vendored SMTP client is patched; the patches are not optional.**
   `tests/vendor-mailer.test.ts` pins them. If one fails after an update, the
   patch was lost — read `vendor/worker-mailer/README.md` before "fixing" the
@@ -92,23 +95,34 @@ migrations/           0001 schema, 0002 seed
 - Tests share one D1 per file. `tests/setup.ts` resets to the seeded state in
   `beforeEach`, **including every settings row a test might tune**; if you add a
   table, a fixture recipient or a setting, reset it there too.
-- `env.ERP` is declared but unused. `resolveDataSource` has the Wave 3 branch
-  written and **not taken** on purpose: merely adding the binding must not
-  silently redirect existing condition jobs.
+- Every ERP job passes `assertErpReady` before its `SELECT`: row floors, matching
+  load stamps, 10-minute settling time and 36-hour freshness are deliberate
+  protection against the nightly table-by-table reload. Do not weaken the gate
+  merely to get a send through.
+- Browser authentication is HTTP Basic username `sodimo`, password
+  `TRIGGER_TOKEN`; API callers can keep using the header or bearer token.
+  Cloudflare Access is the intended outer gate on `auto-email.sodimo.eu`, but
+  Basic auth stays fail-closed underneath it.
 
-## Live-sending caveats (unverified until the first real send)
+## Live-sending caveats
 
 - **The `rapports@sodimo.eu` mailbox was created 2026-07-29** and is inside
   Strato's new-mailbox trial window: roughly **100 messages/hour for its first
   30 days**. Keep `drain_batch_size` modest and do not bulk-test.
-- **Sending as a different From than the authenticating user is unverified.**
-  The first live test should try `From: facturation@sodimo.eu` over
-  `rapports@sodimo.eu` auth; if Strato rejects it, fall back to
-  `From: rapports@sodimo.eu` with `Reply-To: facturation@sodimo.eu`. The code
-  already separates the envelope sender from the `From:` header, so this is a
-  settings change, not a code change.
+- A first production transport test on 2026-07-29 verified SMTP through Strato
+  and IMAP APPEND to the discovered Sent folder. Preserve the explicit EHLO,
+  authentication and synchronizing-literal behavior that made it succeed.
 
 ## Workflow
 
-Issues → branch `feat/<issue>-slug` → PR → squash-merge. Conventional commits.
-Atomic commits: schema, engine module, tests and docs move separately.
+This repository's convention is direct, atomic conventional commits to `main`.
+Run `npm run check` and `npm test`, push, confirm GitHub CI, then deploy only by
+manual workflow dispatch:
+
+```sh
+gh workflow run deploy.yml -R sodimo/auto-email
+```
+
+Push-to-main deployment remains gated by `DEPLOY_ENABLED`. Never use the local
+wrangler login for account operations: it belongs to a personal Cloudflare
+account, not Sodimo. See `OPERATIONS.md` for the custom-domain and Access steps.

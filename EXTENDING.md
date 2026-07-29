@@ -2,50 +2,38 @@
 
 Read SPEC.md first. This file is the "how", one worked example at a time.
 
-## Add a new alert (no code)
+## Add a new alert (normally no code)
 
-Most new sendings are three rows, not a deploy. Say: warn when an invoice has
-been unpaid for 30 days or more, once per invoice, checked every morning at
-07:00 UTC.
+Open the French admin UI, choose **Nouvel envoi**, then:
 
-1. **Template** — French subject and both bodies. `per_row` jobs get the matched
-   row's columns as variables on top of the standard bag (`job_name`, `date_fr`,
-   `generated_at`, `dashboard_url`, `row_count`, `rows_table_html`, `rows_text`).
+1. Give the sending a plain French name and select a built-in purpose where one
+   fits. Built-in purposes own their audited ERP query.
+2. Pick a human schedule such as “tous les jours à 07:00”. The UI stores UTC
+   cron internally; business users never type it.
+3. Select a template and recipient list. Templates expose their available
+   `{{variables}}` and compile the friendly source into safe HTML and text.
+4. Save it paused, use **Tester maintenant**, inspect **Historique** for both
+   SMTP and Sent-folder status, then enable it.
 
-   ```sql
-   INSERT INTO templates (name, subject_fr, body_html, body_text) VALUES (
-     'facture-impayee',
-     'Facture {{numero}} impayée depuis {{jours}} jours',
-     '<p>La facture <strong>{{numero}}</strong> ({{client}}, {{montant}} €) est impayée depuis {{jours}} jours.</p>',
-     'Facture {{numero}} ({{client}}, {{montant}} EUR) impayée depuis {{jours}} jours.'
-   );
-   ```
+Deep links make a Claude-guided handoff precise:
 
-2. **Job** — `condition` kind, `per_row` dedupe. The SQL **must** return a
-   `dedupe_key` column; its value is what makes the alert fire once and never
-   again for that invoice.
+```text
+/?section=jobs&action=new-job
+/?section=templates&action=new-template
+/?section=recipients&action=new-list
+/?section=history
+/?section=safety
+```
 
-   ```sql
-   INSERT INTO jobs (name, kind, enabled, schedule, template_id, recipient_list_id, condition_sql, dedupe_strategy)
-   SELECT 'factures-impayees', 'condition', 0, '0 7 * * *', t.id, l.id,
-          'SELECT numero AS dedupe_key, numero, client, montant, jours FROM factures WHERE jours >= 30',
-          'per_row'
-   FROM templates t, recipient_lists l WHERE t.name = 'facture-impayee' AND l.name = 'test';
-   ```
+The **Options avancées** editor exists for a genuinely new condition. Its SQL
+must be one read-only `SELECT`/`WITH`; choose the operational or ERP source.
+`per_row` jobs must return a non-empty `dedupe_key` and alert once per key.
+`per_day` sends at most once per UTC date, and `per_run` once per scheduled
+slot. The read-only guard and 500-row limit always apply.
 
-3. **Test it before enabling.** The job ships `enabled = 0`; a manual trigger
-   runs it anyway, under a `manual:` dedupe key that does not consume the
-   scheduled slot.
-
-   ```sh
-   curl -s -X POST -H "X-Trigger-Token: $TOKEN" "$BASE/trigger/factures-impayees"
-   ```
-
-   Check `send_log`, then `UPDATE jobs SET enabled = 1 WHERE name = '…'`.
-
-Choosing a dedupe strategy: `per_row` for "alert once about this thing",
-`per_day` for "one of these per day whatever happens", `per_run` for "once per
-scheduled slot".
+Manual tests for `per_day`/`per_run` use a `manual:<ISO-minute>` key and do not
+consume the scheduled slot. `per_row` deliberately does not bypass an already
+claimed business key.
 
 ## Add a variable to templates
 
@@ -55,19 +43,20 @@ rather than throwing, so an old template keeps working.
 
 ## Add an endpoint
 
-Add the route in `src/index.ts`, after `authorize()`. There is no anonymous
-surface and no framework — the router is a couple of `if`s, deliberately. If an
-endpoint sends mail it must go through `runJobById`/`runJob` and `drainOutbox`,
-never near a `MailTransport` directly.
+Add a legacy route in `src/index.ts` after `authorize()`, or an admin route in
+`src/admin/routes.ts`. There is no anonymous surface and no framework. Mutating
+admin routes must keep the same-origin CSRF checks. If an endpoint sends mail it
+must go through `runJobById`/`runJob` and `drainOutbox`, never near a
+`MailTransport` directly.
 
 ## Change what may be sent
 
-Widening recipients is a Wave 2 decision, not a convenience. It means flipping
-`config.ts#FORCE_TEST_MODE` to `false` and handing control to the
-`settings.test_mode` row, with the admin UI and Cloudflare Access in front of
-it. `TEST_MODE_ALLOWLIST` stays as the test-mode target. Do not edit either to
-unblock a test — inject a fake `MailTransport` instead, the way
-`tests/helpers.ts` does.
+Test mode is still forced. Widening recipients requires a separate production
+readiness decision: Cloudflare Access must already protect the custom domain,
+operators must confirm recipient lists and volumes, and the change to
+`config.ts#FORCE_TEST_MODE` must be reviewed explicitly. `TEST_MODE_ALLOWLIST`
+stays as the test-mode target. Do not edit either to unblock a test — inject a
+fake `MailTransport` instead, the way `tests/helpers.ts` does.
 
 ## Tune throughput
 
@@ -91,16 +80,17 @@ behaviour that matters — if it fails after an update, a patch was lost. The
 EHLO hostname is the one that fails silently in production, so treat that test
 as a tripwire, not a nuisance.
 
-## Wire the ERP mirror (Wave 3)
+## Add or change ERP-derived content
 
-1. Add the second D1 binding to `wrangler.jsonc`: `ERP` / `sodimo-prod`, with
-   **no** `migrations_dir` — the NAS ETL owns that database.
-2. Add a `source` column to `jobs` (`'own' | 'erp'`, default `'own'`).
-3. Take the branch already written in `src/lib/datasource.ts#resolveDataSource`.
-   It is commented out on purpose so that adding the binding alone cannot
-   redirect existing jobs.
-4. `assertReadOnlySql` applies unchanged and must keep applying — the ERP
-   binding is a read/write handle like any other.
+The `ERP` binding already points at `sodimo-prod`. The NAS ETL is frozen and
+remains the sole owner: do not change it, request a new mirrored table, add ERP
+migrations, or execute a write.
+
+For a reusable non-technical choice, add the canonical read-only query to
+`src/lib/job-presets.ts` and expose its preset in the admin service/view. Reuse
+the dashboard's established field meanings and business rules. Every ERP run
+must retain both `assertReadOnlySql` and `assertErpReady`; the latter prevents
+sending while the nightly table replacements are incomplete or stale.
 
 ## Add a test
 

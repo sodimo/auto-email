@@ -2,13 +2,15 @@
 
 Automated email sendings for the Sodimo team: **scheduled digests** (the nightly
 report that replaces Sodiwin's emailed Excel files) and **condition-based alerts**
-(e.g. an invoice unpaid for ≥30 days). One Cloudflare Worker, one D1 database,
+(e.g. an invoice unpaid for ≥30 days). One Cloudflare Worker, its operational D1
+database, and a logically read-only binding to the production ERP mirror;
 Strato SMTP + IMAP. **Free plan.** The audience is non-technical and French —
 every email body is French; the code and these docs are English.
 
-Wave 1 (this repo, now) is the engine. Wave 2 adds the French admin UI at
-`auto-email.sodimo.eu` behind Cloudflare Access. Wave 3 wires the read-only
-`sodimo-prod` ERP mirror in as a condition data source.
+Wave 2 is implemented. The same Worker serves the French admin UI and sending
+engine. `auto-email.sodimo.eu` is attached by a manual CI workflow and will sit
+behind Cloudflare Access; until that policy is installed, every route is
+protected by the Worker's fail-closed shared-secret authentication.
 
 ## The two hard rules
 
@@ -28,16 +30,17 @@ exactly `off` — including a missing row — means engaged. An engaged switch
 *holds* the queue rather than cancelling it; turning it off resumes exactly
 where it stopped.
 
-## TEST MODE IS LAW (Wave 1)
+## TEST MODE IS LAW
 
 Recipients are hard-pinned to `thomas@leger.run` and `tombionic@gmail.com`. The
 allowlist is **code** (`src/lib/guard.ts#TEST_MODE_ALLOWLIST`), and
 `config.ts#FORCE_TEST_MODE` keeps it in force regardless of the
-`settings.test_mode` row, so no database edit can put a real Sodimo address in
-play before Wave 2 does it deliberately. Any other recipient is logged
+`settings.test_mode` row, so no database edit or UI action can put a real
+Sodimo address in play. Any other recipient is logged
 `skipped_test_mode` and never contacted — at enqueue, and again at drain, so a
 message queued before the rule tightened is cancelled rather than sent.
-Production recipient lists exist in the schema only.
+Recipient lists can be prepared in the UI, but test mode remains forced until a
+separate, explicit production-readiness change.
 
 ## The sharded outbox, and why
 
@@ -77,7 +80,8 @@ as a growing `outbox.pending` in `/healthz`.
 | EHLO | `settings.ehlo_hostname` = `sodimo.eu`. Not cosmetic — see below |
 | From | `Rapports Sodimo <rapports@sodimo.eu>`; password from the `STRATO_SMTP_PASSWORD` Worker secret |
 | Sent copies | IMAP APPEND to the discovered `\Sent` mailbox at `imap.strato.com:993` (`src/lib/imap-append.ts`, hand-rolled) |
-| DB | D1, binding `DB`, database `auto-email`. Plain SQL in `migrations/`. No ORM |
+| Operational DB | D1 binding `DB`, database `auto-email`. Plain SQL in `migrations/`. No ORM |
+| ERP mirror | D1 binding `ERP`, database `sodimo-prod` (`c7552dfa-d55e-4a29-9510-9ab25109e952`). The frozen `sodimo/etl` remains its sole writer; auto-email runs guarded `SELECT` queries only |
 | Tests | `vitest` + `@cloudflare/vitest-pool-workers`, real D1 with migrations applied; SMTP and IMAP driven against a scripted mock socket, never a network |
 
 ### EHLO is load-bearing
@@ -96,12 +100,16 @@ cannot be reached by mistake. auto-email sends one message per recipient anyway.
 
 ## Data model
 
-Timestamps are ISO-8601 UTC TEXT. See `migrations/0001_init.sql` for the truth.
+Timestamps are ISO-8601 UTC TEXT. See all files in `migrations/` for the truth.
 
-- **jobs** — `name`, `kind` (`digest|condition`), `enabled`, `schedule` (5-field
-  cron, UTC), `template_id`, `recipient_list_id`, `condition_sql` (required for
-  `condition`), `dedupe_strategy`.
-- **templates** — `subject_fr`, `body_html`, `body_text`.
+- **jobs** — `name`, `display_name`, `kind` (`digest|condition`), `enabled`,
+  `schedule` (5-field cron, UTC), `template_id`, `recipient_list_id`,
+  `condition_sql`, `dedupe_strategy`, `source` (`own|erp`) and `preset`
+  (`custom|sales_daily|overdue_30`). The admin UI converts four
+  human-readable schedule forms to cron; it never asks a business user to type
+  cron.
+- **templates** — `subject_fr`, friendly editable `body_source`, and the
+  generated MIME alternatives `body_html`/`body_text`.
 - **recipient_lists** / **recipient_list_members** — `email`, `display_name`, `active`.
 - **send_log** — the idempotency ledger *and* the audit trail. `status` ∈
   `pending | sent | failed | suppressed | skipped_test_mode`, plus
@@ -141,10 +149,17 @@ button.
 ### scheduled()
 
 Kill switch → enabled jobs whose cron fired in the window this tick covers →
-per job: run `condition_sql` (read-only, against auto-email's own D1 in Wave 1)
-→ render once → resolve recipients → per recipient: `enqueue`. Then drain a
-batch. Every recipient is wrapped in its own try/catch at both stages; one
-failure never aborts the run.
+per job: select the declared `own` or `erp` data source, run `condition_sql`
+(read-only) → render once → resolve recipients → per recipient: `enqueue`. Then
+drain a batch. Every recipient is wrapped in its own try/catch at both stages;
+one failure never aborts the run.
+
+Before any ERP query, readiness must pass: all four required tables have
+conservative row-count floors, share the same non-null `loaded_at`, that load
+has settled for at least 10 minutes and is no older than 36 hours, and at least
+one `VF` sales day exists. A failed gate sends nothing and reports 503 for a
+manual trigger. This prevents a digest from observing the nightly ETL between
+its table-by-table replacements.
 
 The Worker cron ticks every 5 minutes (`wrangler.jsonc`), and each tick is
 matched over the 5 minutes it covers, so **job schedules do not have to align to
@@ -173,21 +188,27 @@ advertises no LITERAL+, so a client that writes early hangs until the timeout.
 **A failed copy never fails the send.** The email is already delivered; the
 outcome is recorded in `append_status`/`append_response` and nowhere else.
 
-### fetch()
+### Admin UI and fetch()
 
-Every endpoint requires the `TRIGGER_TOKEN` shared secret, as `X-Trigger-Token`
-or `Authorization: Bearer`. There is no anonymous surface — an unauthenticated
-request gets 401 even for an unknown path.
+Every route requires `TRIGGER_TOKEN`. Automation can present it as
+`X-Trigger-Token` or `Authorization: Bearer`; a browser uses HTTP Basic with
+username `sodimo` and the token as password. There is no login page and no
+anonymous route — an unauthenticated request gets 401 even for an unknown path.
+State-changing browser requests also enforce same-origin/Sec-Fetch checks.
+
+- `GET /` and `GET /admin` — French, responsive administration UI: jobs,
+  friendly schedules, templates and variables, recipient lists, send/append
+  history, failures, and the prominent kill switch.
+- `/api/admin/*` — the authenticated UI's CRUD and test actions. A test action
+  reuses `runJobById` and `drainOutbox`; it is not another send path.
 
 - `POST /trigger/:jobId` — enqueue one job now, by id or name, then drain, so a
   manual test is one command. Runs even if the job is disabled (that is the
   point). 409 while the kill switch is engaged, 404 if the job does not exist.
 - `POST /drain` — drain the queue without enqueueing anything.
-- `GET /healthz` — D1 reachable, required settings present, secrets set, both
-  switch states, the pinned recipient list, and the queue backlog. 503 when
-  something is wrong.
-
-No UI. Wave 2 owns that.
+- `GET /healthz` — both D1 bindings reachable, required settings present,
+  secrets set, both switch states, the pinned recipient list, and the queue
+  backlog. 503 when something is wrong.
 
 ### condition_sql
 
@@ -197,12 +218,32 @@ statements, no write/DDL/transaction keywords, ≤500 rows. **D1 has no read-onl
 binding mode** — the bindings are ordinary read/write handles, so this guard is
 load-bearing for write prevention, not belt-and-braces.
 
+### Built-in ERP jobs
+
+- **`rapport-nightly`** — every day at 06:00 UTC, `per_day`. It finds the
+  latest loaded `VF` sales day, then reports revenue (`qte × pvnet`), gross
+  margin (`qte × (pvnet − pmpa)`), margin rate, prior-day revenue change,
+  documents, clients and quantity, with a dashboard link.
+- **`paiements-en-retard`** — every Monday at 07:00 UTC, `per_day`. It derives
+  client identity through `fact_echeances.numdoc → fact_ventes.numdoc`, nets
+  available `fact_reglements` at client level FIFO against the oldest due
+  items, selects remaining amounts at least 30 days overdue, and sends one
+  internal summary capped at 100 clients. Because the mirror cannot map a
+  payment to a specific invoice, the email labels this as an estimate that
+  does not replace accounting reconciliation. Weekly scheduling plus daily
+  slot dedupe prevents the same population from re-alerting every day.
+
+Both are seeded disabled so the first real sends are deliberate; operators
+enable them after verification.
+
 ### Templates
 
 `{{var}}` (HTML-escaped in HTML bodies) and `{{{var}}}` (raw). No loops, no
 conditionals. Always available: `job_name`, `date_fr`, `generated_at`,
-`dashboard_url`, `row_count`, `rows_table_html` (raw), `rows_text`. For `per_row`
-jobs, the matched row's columns are variables too.
+`dashboard_url`, `row_count`, `rows_table_html` (raw), `rows_text`. For
+single-row digests and `per_row` jobs, the row's columns are variables too.
+The admin editor accepts a friendly plain-text source and compiles safe,
+responsive HTML plus a text alternative.
 
 ## Non-goals
 
@@ -210,5 +251,5 @@ jobs, the matched row's columns are variables too.
 plan, so they are the deliberate trigger for that conversation rather than a
 quiet addition — and the vendored SMTP client has the code removed, not merely
 unused. Also out: inbound mail, bounce handling, open/click tracking, per-user
-preferences, a template editor, queueing beyond D1, and any retry broader than
-the narrow rule above.
+preferences, queueing beyond D1, and any retry broader than the narrow rule
+above.
