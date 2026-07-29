@@ -57,8 +57,8 @@ rather than throwing, so an old template keeps working.
 
 Add the route in `src/index.ts`, after `authorize()`. There is no anonymous
 surface and no framework — the router is a couple of `if`s, deliberately. If an
-endpoint sends mail it must go through `runJobById`/`runJob`, never near
-`Mailer` directly.
+endpoint sends mail it must go through `runJobById`/`runJob` and `drainOutbox`,
+never near a `MailTransport` directly.
 
 ## Change what may be sent
 
@@ -66,7 +66,30 @@ Widening recipients is a Wave 2 decision, not a convenience. It means flipping
 `config.ts#FORCE_TEST_MODE` to `false` and handing control to the
 `settings.test_mode` row, with the admin UI and Cloudflare Access in front of
 it. `TEST_MODE_ALLOWLIST` stays as the test-mode target. Do not edit either to
-unblock a test — inject a fake `Mailer` instead, the way `tests/helpers.ts` does.
+unblock a test — inject a fake `MailTransport` instead, the way
+`tests/helpers.ts` does.
+
+## Tune throughput
+
+`settings.drain_batch_size` (default 10, hard-capped at 25 by
+`config.ts#MAX_DRAIN_BATCH`) is how many messages one invocation sends. The cap
+exists because a free-plan invocation gets ~10ms of CPU. Raising the tick rate
+in `wrangler.jsonc` means raising `config.ts#TICK_MINUTES` to match, or jobs
+will fire more than once per slot — the dedupe ledger will catch it, but the
+run summaries will be full of duplicates.
+
+Attachments would blow the CPU budget and are the intended trigger for the
+paid-plan conversation, not a quiet addition. The vendored client has the code
+removed; re-adding it is a deliberate vendor patch.
+
+## Update the vendored SMTP client
+
+`vendor/worker-mailer/` is worker-mailer v1.2.1 with three patches and several
+removals, all listed in its README. There is no npm dependency to bump: diff
+against upstream `v1.2.1` and re-apply. `tests/vendor-mailer.test.ts` pins the
+behaviour that matters — if it fails after an update, a patch was lost. The
+EHLO hostname is the one that fails silently in production, so treat that test
+as a tripwire, not a nuisance.
 
 ## Wire the ERP mirror (Wave 3)
 
@@ -81,8 +104,15 @@ unblock a test — inject a fake `Mailer` instead, the way `tests/helpers.ts` do
 
 ## Add a test
 
-`tests/helpers.ts` gives you `FakeMailer` (records messages, can fail a chosen
-address), `insertJob`, `addRecipient`, `setSetting` and `sendLog`. No test opens
-a socket, and `tests/setup.ts` points `settings.smtp_host` at `127.0.0.1` so an
-accidental real connection fails locally instead of reaching Strato. Reset any
-new table or fixture in that file's `beforeEach`.
+`tests/helpers.ts` gives you `FakeTransport` (records the raw bytes, can fail a
+chosen address), `UnreachableTransport`, `FakeAppender`, `insertJob`,
+`addRecipient`, `setSetting`, `sendLog`, `outbox` and `makeQueueDue`. For
+protocol-level work, `tests/mock-socket.ts` scripts a whole SMTP or IMAP
+dialogue in memory — that is how the EHLO patch and the IMAP synchronizing
+literal are tested.
+
+No test opens a socket, and `tests/setup.ts` points `smtp_host`/`imap_host` at
+`127.0.0.1` so an accidental real connection fails locally instead of reaching
+Strato. Reset any new table, fixture **or settings row** in that file's
+`beforeEach` — a setting one test tunes silently becomes the next test's
+premise otherwise.
