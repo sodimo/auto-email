@@ -1,23 +1,63 @@
 import { env } from "cloudflare:test";
-import type { Mailer, MailerResult, OutboundMessage } from "../src/lib/mailer.js";
 import { loadSettings } from "../src/lib/db.js";
+import type { AppendResult, SentAppender } from "../src/lib/imap-append.js";
+import type { MailSession, MailTransport } from "../src/lib/mailer.js";
 import type { Job, Settings } from "../src/types.js";
 
-/** The SMTP seam, replaced. No test opens a socket. */
-export class FakeMailer implements Mailer {
-  readonly sent: OutboundMessage[] = [];
-  /** Return an Error to make that one address fail; undefined to succeed. */
-  constructor(private readonly failFor: (message: OutboundMessage) => Error | undefined = () => undefined) {}
+const decoder = new TextDecoder();
 
-  async send(message: OutboundMessage): Promise<MailerResult> {
-    const failure = this.failFor(message);
-    if (failure) throw failure;
-    this.sent.push(message);
-    return { messageId: message.messageId, response: "250 fake accepted" };
+/** The SMTP seam, replaced. No test opens a socket through this. */
+export class FakeTransport implements MailTransport {
+  readonly sent: { to: string; raw: string }[] = [];
+  opens = 0;
+  closes = 0;
+
+  /** Return an Error to make that one address fail; undefined to succeed. */
+  constructor(private readonly failFor: (to: string) => Error | undefined = () => undefined) {}
+
+  async open(): Promise<MailSession> {
+    this.opens++;
+    return {
+      sendRaw: async (to: string, raw: Uint8Array): Promise<string> => {
+        const failure = this.failFor(to);
+        if (failure) throw failure;
+        this.sent.push({ to, raw: decoder.decode(raw) });
+        return "250 2.0.0 Ok: queued as FAKE";
+      },
+      close: async (): Promise<void> => {
+        this.closes++;
+      },
+    };
   }
 
   get recipients(): string[] {
-    return this.sent.map((m) => m.to.email);
+    return this.sent.map((s) => s.to);
+  }
+}
+
+/** A transport whose session cannot be opened at all (SMTP host unreachable). */
+export class UnreachableTransport implements MailTransport {
+  constructor(private readonly message = "connection refused") {}
+  async open(): Promise<MailSession> {
+    throw new Error(this.message);
+  }
+}
+
+export class FakeAppender implements SentAppender {
+  readonly folder = "INBOX.Sent";
+  readonly appended: string[] = [];
+  closes = 0;
+
+  constructor(private readonly fail = false) {}
+
+  async append(message: Uint8Array): Promise<AppendResult> {
+    if (this.fail) return { status: "failed", response: "APPEND failed: a3 NO over quota" };
+    this.appended.push(decoder.decode(message));
+    return { status: "appended", response: "a3 OK [APPENDUID 1 42] APPEND completed" };
+  }
+
+  async close(): Promise<void> {
+    this.closes++;
   }
 }
 
@@ -68,13 +108,48 @@ export async function insertJob(overrides: Partial<Job> & { name: string }): Pro
   return { id: row!.id, ...job } as Job;
 }
 
-export async function sendLog(): Promise<
-  { job_id: number; recipient: string; dedupe_key: string; status: string; smtp_response: string | null }[]
-> {
+export interface SendLogRow {
+  job_id: number;
+  recipient: string;
+  dedupe_key: string;
+  status: string;
+  smtp_response: string | null;
+  append_status: string | null;
+  append_response: string | null;
+}
+
+export async function sendLog(): Promise<SendLogRow[]> {
   const { results } = await env.DB.prepare(
-    "SELECT job_id, recipient, dedupe_key, status, smtp_response FROM send_log ORDER BY id",
-  ).all<{ job_id: number; recipient: string; dedupe_key: string; status: string; smtp_response: string | null }>();
+    `SELECT job_id, recipient, dedupe_key, status, smtp_response, append_status, append_response
+       FROM send_log ORDER BY id`,
+  ).all<SendLogRow>();
   return results;
+}
+
+export interface OutboxSnapshot {
+  id: number;
+  recipient: string;
+  dedupe_key: string;
+  status: string;
+  attempts: number;
+  next_attempt_at: string;
+  last_error: string | null;
+  subject: string;
+}
+
+export async function outbox(): Promise<OutboxSnapshot[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT id, recipient, dedupe_key, status, attempts, next_attempt_at, last_error, subject
+       FROM outbox ORDER BY id`,
+  ).all<OutboxSnapshot>();
+  return results;
+}
+
+/** Makes every queued message due now, undoing a retry backoff. */
+export async function makeQueueDue(): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE outbox SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 minute') WHERE status = 'pending'",
+  ).run();
 }
 
 /** Adds a recipient to the seeded "test" list — used to prove the guard blocks

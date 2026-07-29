@@ -10,6 +10,7 @@ describe("authentication", () => {
     for (const [path, method] of [
       ["/healthz", "GET"],
       ["/trigger/rapport-nightly", "POST"],
+      ["/drain", "POST"],
       ["/", "GET"],
     ] as const) {
       const response = await SELF.fetch(`https://auto-email.test${path}`, { method });
@@ -45,11 +46,27 @@ describe("GET /healthz", () => {
       ok: true,
       problems: [],
       enabled_jobs: 0,
+      outbox: { pending: 0, failed: 0, oldest: null },
       kill_switch: "off",
       test_mode: "on",
       pinned_recipients: ["thomas@leger.run", "tombionic@gmail.com"],
       from: "rapports@sodimo.eu",
+      ehlo: "sodimo.eu",
+      // tests/setup.ts points the hosts at 127.0.0.1 so nothing can dial out.
+      sent_copies: "127.0.0.1:993",
     });
+  });
+
+  it("reports the queue backlog, which is how an SMTP outage shows up", async () => {
+    const { env } = await import("cloudflare:test");
+    const { enqueueDueJobs } = await import("../src/runner.js");
+    await env.DB.prepare("UPDATE jobs SET enabled = 1 WHERE name = 'rapport-nightly'").run();
+    await enqueueDueJobs(env, new Date("2026-07-29T06:00:00Z").getTime());
+
+    const response = await SELF.fetch("https://auto-email.test/healthz", { headers: auth() });
+    const body = (await response.json()) as { outbox: { pending: number; oldest: string | null } };
+    expect(body.outbox.pending).toBe(2);
+    expect(body.outbox.oldest).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("surfaces an engaged kill switch without failing the check", async () => {
@@ -101,5 +118,24 @@ describe("POST /trigger/:jobId", () => {
   it("404s an unknown route for an authenticated caller", async () => {
     const response = await SELF.fetch("https://auto-email.test/admin", { headers: auth() });
     expect(response.status).toBe(404);
+  });
+});
+
+describe("POST /drain", () => {
+  it("reports an empty queue without opening anything", async () => {
+    const response = await SELF.fetch("https://auto-email.test/drain", { method: "POST", headers: auth() });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ scanned: 0, sent: 0, failed: 0 });
+  });
+
+  it("reports the kill switch instead of draining", async () => {
+    await setSetting("kill_switch", "on");
+    const response = await SELF.fetch("https://auto-email.test/drain", { method: "POST", headers: auth() });
+    expect(await response.json()).toMatchObject({ suppressed: expect.stringContaining("kill switch") });
+  });
+
+  it("405s a GET", async () => {
+    const response = await SELF.fetch("https://auto-email.test/drain", { headers: auth() });
+    expect(response.status).toBe(405);
   });
 });
