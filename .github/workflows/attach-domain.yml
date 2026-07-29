@@ -1,0 +1,64 @@
+# One-time, idempotent account-level Workers Custom Domain attachment.
+#
+# This is intentionally separate from deploy.yml: a missing account-domain
+# permission must not make routine code deploys fail.
+# Run after the Worker exists:
+#   gh workflow run attach-domain.yml -R sodimo/auto-email
+#
+# Cloudflare Access is a separate operator step. Do not create or mutate Zero
+# Trust policy here; the application must allow the reusable "Équipe Sodimo"
+# Access group.
+name: attach custom domain
+
+on:
+  workflow_dispatch:
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Check account credentials
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::error::The inherited Cloudflare account credentials are missing."
+            exit 1
+          fi
+
+      - name: Attach auto-email.sodimo.eu to the Worker
+        run: |
+          set -euo pipefail
+          BODY=$(jq -n \
+            --arg hostname "auto-email.sodimo.eu" \
+            --arg service "auto-email" \
+            --arg zone_name "sodimo.eu" \
+            '{hostname:$hostname,service:$service,zone_name:$zone_name}')
+          RESPONSE=$(curl --silent --show-error --fail-with-body \
+            --request PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$BODY")
+          if [ "$(printf '%s' "$RESPONSE" | jq -r '.success')" != "true" ]; then
+            printf '%s' "$RESPONSE" | jq -r '.errors[]?.message' >&2
+            exit 1
+          fi
+          echo "::notice::auto-email.sodimo.eu is attached to service auto-email."
+
+      - name: Verify the domain record
+        run: |
+          set -euo pipefail
+          RESPONSE=$(curl --silent --show-error --fail-with-body \
+            --get \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+          MATCH=$(printf '%s' "$RESPONSE" | jq -r \
+            '.result[]? | select(.hostname == "auto-email.sodimo.eu") | .hostname' | head -1)
+          if [ "$MATCH" != "auto-email.sodimo.eu" ]; then
+            echo "::error::The API accepted the request but the domain record was not found."
+            exit 1
+          fi
+          echo "::notice::Verified ${MATCH}."

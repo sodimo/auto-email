@@ -6,14 +6,14 @@
   // worker-mailer opens raw TCP via `cloudflare:sockets`; nodejs_compat is required.
   "compatibility_flags": ["nodejs_compat"],
 
-  // WAVE 1 ONLY: workers.dev stays ON so the token-gated /healthz and
-  // /trigger/:jobId endpoints are reachable for the first manual test send.
-  // Both endpoints require the TRIGGER_TOKEN secret header, so nothing is
-  // readable without it. Wave 2 attaches auto-email.sodimo.eu at the ACCOUNT
-  // level (Workers Domains API, same as the sibling `crm` Worker — the custom
-  // domain is NOT declared here as a zone `route`, because the deploy API token
-  // lacks zone Workers-Routes:Edit and re-asserting it would fail the deploy)
-  // and flips this to false.
+  // workers.dev remains available for token-gated operation and verification
+  // until Cloudflare Access has been installed and verified on the custom
+  // domain. Every route, including unknown paths, requires TRIGGER_TOKEN.
+  // auto-email.sodimo.eu is attached at the ACCOUNT level by the manual
+  // attach-domain workflow (same arrangement as sibling `crm`). It is NOT a
+  // zone `route`: re-asserting one at deploy time would require unrelated zone
+  // Workers-Routes:Edit permission. Disable workers_dev in a later reviewed
+  // deployment only after the Access policy is proven.
   "workers_dev": true,
 
   "d1_databases": [

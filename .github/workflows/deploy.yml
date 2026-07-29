@@ -8,10 +8,10 @@
 # (`gh variable set DEPLOY_ENABLED --body true`) so the first pushes cannot
 # deploy into a half-provisioned account. A manual run always deploys.
 #
-# The custom domain auto-email.sodimo.eu is attached at the ACCOUNT level in
-# Wave 2 (Workers Domains API), not declared as a zone `route` here — the deploy
-# token lacks zone Workers-Routes:Edit, so re-asserting a route would fail the
-# deploy. Same arrangement as the sibling `crm` Worker.
+# The custom domain auto-email.sodimo.eu is attached at the ACCOUNT level by
+# attach-domain.yml (Workers Domains API), not declared as a zone `route` here.
+# Domain setup and routine code deployment intentionally have separate
+# permission and failure boundaries.
 name: deploy
 on:
   workflow_dispatch:
