@@ -1,20 +1,30 @@
 /**
- * Worker entry. Two surfaces, no UI (that is Wave 2, at auto-email.sodimo.eu
+ * Worker entry. Three surfaces, no UI (that is Wave 2, at auto-email.sodimo.eu
  * behind Cloudflare Access):
- *   scheduled()             the cron tick — see runner.ts
- *   POST /trigger/:jobId    a manual run of one job, same code path as cron
- *   GET  /healthz           D1 reachable + settings sane + switch states
+ *   scheduled()             the cron tick: enqueue what is due, then drain a batch
+ *   POST /trigger/:jobId    enqueue one job now and drain, same code path as cron
+ *   POST /drain             drain the outbox without enqueueing anything
+ *   GET  /healthz           D1, settings, secrets, switch states, queue backlog
  *
- * Both HTTP endpoints require the TRIGGER_TOKEN shared secret. There is no
+ * Every endpoint requires the TRIGGER_TOKEN shared secret. There is no
  * anonymous surface at all: an unauthenticated request cannot even distinguish
  * a missing route from a wrong token.
  */
 import { loadSettings } from "./lib/db.js";
+import { drainOutbox } from "./lib/drain.js";
 import { isKillSwitchEngaged, isTestMode, TEST_MODE_ALLOWLIST } from "./lib/guard.js";
-import { runDueJobs, runJobById } from "./runner.js";
+import { enqueueDueJobs, runJobById } from "./runner.js";
 import type { Env } from "./types.js";
 
-const REQUIRED_SETTINGS = ["kill_switch", "test_mode", "smtp_host", "smtp_port", "from_address", "from_name"];
+const REQUIRED_SETTINGS = [
+  "kill_switch",
+  "test_mode",
+  "smtp_host",
+  "smtp_port",
+  "from_address",
+  "from_name",
+  "ehlo_hostname",
+];
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
@@ -23,8 +33,8 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Length-independent compare; both sides are hashed first so the loop never
- *  runs over the secret itself and length is not leaked by timing. */
+/** Length-independent compare: both sides are hashed first, so the loop never
+ *  runs over the secret itself and the length is not leaked by timing. */
 async function secretsMatch(presented: string, expected: string): Promise<boolean> {
   const encoder = new TextEncoder();
   const [a, b] = await Promise.all([
@@ -56,15 +66,27 @@ async function authorize(request: Request, env: Env): Promise<Response | null> {
 async function healthz(env: Env): Promise<Response> {
   const problems: string[] = [];
   let settings: Awaited<ReturnType<typeof loadSettings>> = {};
-  let jobCount: number | null = null;
+  let enabledJobs: number | null = null;
+  let queue: { pending: number; failed: number; oldest: string | null } | null = null;
 
   try {
     settings = await loadSettings(env.DB);
-    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE enabled = 1").first<{ n: number }>();
-    jobCount = row?.n ?? 0;
+    const jobs = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE enabled = 1").first<{ n: number }>();
+    enabledJobs = jobs?.n ?? 0;
+    // A growing backlog is how a sustained SMTP outage shows up: unretryable
+    // failures are terminal, but connection problems leave rows queued.
+    const outbox = await env.DB.prepare(
+      `SELECT
+         COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending,
+         COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed,
+         MIN(CASE WHEN status = 'pending' THEN created_at END) AS oldest
+       FROM outbox`,
+    ).first<{ pending: number | null; failed: number | null; oldest: string | null }>();
+    queue = { pending: outbox?.pending ?? 0, failed: outbox?.failed ?? 0, oldest: outbox?.oldest ?? null };
   } catch (cause) {
     problems.push(`D1 unreachable: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
+
   for (const key of REQUIRED_SETTINGS) {
     if (settings[key] === undefined) problems.push(`settings.${key} is missing`);
   }
@@ -74,12 +96,18 @@ async function healthz(env: Env): Promise<Response> {
     {
       ok: problems.length === 0,
       problems,
-      enabled_jobs: jobCount,
+      enabled_jobs: enabledJobs,
+      outbox: queue,
       kill_switch: isKillSwitchEngaged(settings) ? "engaged" : "off",
       test_mode: isTestMode(settings) ? "on" : "off",
       pinned_recipients: isTestMode(settings) ? TEST_MODE_ALLOWLIST : null,
       smtp: settings.smtp_host ? `${settings.smtp_host}:${settings.smtp_port}` : null,
+      ehlo: settings.ehlo_hostname ?? null,
       from: settings.from_address ?? null,
+      sent_copies:
+        (settings.imap_append ?? "").trim().toLowerCase() === "on"
+          ? `${settings.imap_host}:${settings.imap_port}`
+          : "off",
     },
     problems.length === 0 ? 200 : 503,
   );
@@ -91,17 +119,25 @@ export default {
     if (denied) return denied;
 
     const url = new URL(request.url);
+
     if (request.method === "GET" && url.pathname === "/healthz") {
       return await healthz(env);
+    }
+
+    if (url.pathname === "/drain") {
+      if (request.method !== "POST") return json({ error: "use POST" }, 405);
+      return json(await drainOutbox(env));
     }
 
     const trigger = /^\/trigger\/([^/]+)$/.exec(url.pathname);
     if (trigger && request.method === "POST") {
       const jobId = decodeURIComponent(trigger[1]!);
       try {
-        const outcome = await runJobById(env, jobId);
-        if (outcome.suppressed) return json({ job: jobId, suppressed: outcome.suppressed }, 409);
-        return json(outcome.result);
+        const queued = await runJobById(env, jobId);
+        if (queued.suppressed) return json({ job: jobId, suppressed: queued.suppressed }, 409);
+        // Drain in the same request, so a manual test is one command rather
+        // than one command and a five-minute wait.
+        return json({ queued: queued.result, drained: await drainOutbox(env) });
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         return json({ job: jobId, error: message }, message.startsWith("job not found") ? 404 : 500);
@@ -113,12 +149,14 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Awaited inside waitUntil so the isolate survives the SMTP round trips and
-    // the summary reaches the tail worker / observability logs.
+    // Enqueue is cheap (render + inserts); the drain is capped at a handful of
+    // messages so the invocation stays inside the free plan's CPU budget.
     ctx.waitUntil(
-      runDueJobs(env, event.scheduledTime).then((summary) => {
-        console.log(JSON.stringify({ event: "cron", ...summary }));
-      }),
+      (async () => {
+        const enqueued = await enqueueDueJobs(env, event.scheduledTime);
+        const drained = await drainOutbox(env);
+        console.log(JSON.stringify({ event: "cron", enqueued, drained }));
+      })(),
     );
   },
 } satisfies ExportedHandler<Env>;
