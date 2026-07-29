@@ -36,11 +36,12 @@ jobs:
         id: d1
         run: |
           set -euo pipefail
-          INFO=$(npx wrangler d1 info auto-email --json)
-          echo "$INFO"
-          ID=$(printf '%s' "$INFO" | sed -n '/^[[:space:]]*{/,$p' | jq -r '.uuid // .database_id // empty')
+          # 'd1 info <name>' resolves through wrangler.jsonc and hits the placeholder
+          # database_id; 'd1 list' queries the account by name and is config-independent.
+          LIST=$(npx wrangler d1 list --json)
+          ID=$(printf '%s' "$LIST" | sed -n '/^[[:space:]]*\[/,$p' | jq -r '.[] | select(.name == "auto-email") | .uuid // .database_id' | head -1)
           if [ -z "$ID" ]; then
-            echo "::error::could not read the database uuid from 'wrangler d1 info auto-email --json' (output above)"
+            echo "::error::could not find database 'auto-email' in 'wrangler d1 list --json'"
             exit 1
           fi
           echo "id=$ID" >> "$GITHUB_OUTPUT"
