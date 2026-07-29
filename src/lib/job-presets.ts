@@ -78,23 +78,43 @@ WHERE l.day IS NOT NULL
 /**
  * Client-level FIFO approximation, constrained to tables already mirrored by
  * the frozen ETL:
- *   échéance.numdoc -> vente.numdoc -> client
- *   règlement -> client
+ *   échéance.numdoc -> règlement.numreg -> client
+ *   échéance.numdoc -> vente.numdoc -> client (fallback for older mirrors)
+ *   règlement -> client payments
  *
- * Payments cannot be tied to an invoice in the mirror, so each client's total
- * payments are applied oldest due item first. The email labels this explicitly.
- * One row per client keeps the result concise; the 100-client ceiling also
- * bounds email size independently of the generic 500-row datasource cap.
+ * The real frozen ETL maps REGLE.NUMREG to fact_echeances.numdoc, so the
+ * settlement-document relationship is primary. Payments still cannot be tied
+ * to an invoice in the mirror, so each client's total payments are applied
+ * oldest due item first. The email labels this explicitly. One row per client
+ * keeps the result concise; the 100-client ceiling also bounds email size
+ * independently of the generic 500-row datasource cap.
  */
 export const OVERDUE_PAYMENTS_SQL = `
 WITH
-document_clients AS (
+sales_document_clients AS (
   SELECT
     TRIM(numdoc) AS numdoc,
     MIN(NULLIF(TRIM(tiers_code), '')) AS tiers_code
   FROM fact_ventes
   WHERE type = 'VF'
   GROUP BY TRIM(numdoc)
+),
+payment_document_clients AS (
+  SELECT
+    TRIM(numreg) AS numdoc,
+    MIN(NULLIF(TRIM(tiers_code), '')) AS tiers_code
+  FROM fact_reglements
+  GROUP BY TRIM(numreg)
+),
+document_clients AS (
+  SELECT numdoc, tiers_code
+  FROM payment_document_clients
+  WHERE tiers_code IS NOT NULL
+  UNION ALL
+  SELECT s.numdoc, s.tiers_code
+  FROM sales_document_clients s
+  LEFT JOIN payment_document_clients p ON p.numdoc = s.numdoc
+  WHERE p.numdoc IS NULL AND s.tiers_code IS NOT NULL
 ),
 due_items AS (
   SELECT

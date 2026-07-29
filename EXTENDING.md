@@ -86,6 +86,11 @@ The `ERP` binding already points at `sodimo-prod`. The NAS ETL is frozen and
 remains the sole owner: do not change it, request a new mirrored table, add ERP
 migrations, or execute a write.
 
+Do not infer joins from friendly column names alone. In particular, the loaded
+`fact_echeances.numdoc` comes from `REGLE.NUMREG` and maps to
+`fact_reglements.numreg`; it has no overlap with sales invoice numbers in the
+verified production snapshot.
+
 For a reusable non-technical choice, add the canonical read-only query to
 `src/lib/job-presets.ts` and expose its preset in the admin service/view. Reuse
 the dashboard's established field meanings and business rules. Every ERP run

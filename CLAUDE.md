@@ -68,7 +68,7 @@ src/lib/db.ts         typed reads; src/lib/datasource.ts source routing + SQL gu
 src/lib/erp.ts        production-mirror completeness/freshness gate
 src/lib/job-presets.ts canonical sales-digest and overdue-payment ERP queries
 vendor/worker-mailer/ patched SMTP client (MIT, see its README)
-migrations/           0001 schema, 0002 seed, 0003 Wave 2 jobs/admin metadata
+migrations/           0001 schema, 0002 seed, 0003 Wave 2, 0004 overdue mapping
 ```
 
 ## Sharp edges
@@ -99,6 +99,9 @@ migrations/           0001 schema, 0002 seed, 0003 Wave 2 jobs/admin metadata
   load stamps, 10-minute settling time and 36-hour freshness are deliberate
   protection against the nightly table-by-table reload. Do not weaken the gate
   merely to get a send through.
+- In the frozen ETL, `fact_echeances.numdoc` is `REGLE.NUMREG`; production data
+  maps it to `fact_reglements.numreg`, not to a sales invoice number. The
+  overdue preset keeps `fact_ventes.numdoc` only as a compatibility fallback.
 - Browser authentication is HTTP Basic username `sodimo`, password
   `TRIGGER_TOKEN`; API callers can keep using the header or bearer token.
   Cloudflare Access is the intended outer gate on `auto-email.sodimo.eu`, but

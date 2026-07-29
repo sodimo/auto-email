@@ -131,7 +131,7 @@ describe("built-in ERP job queries", () => {
     ).run();
     await env.ERP.prepare(
       `CREATE TABLE IF NOT EXISTS fact_reglements (
-        date TEXT, tiers_code TEXT, montant REAL, loaded_at TEXT
+        numreg TEXT, date TEXT, tiers_code TEXT, montant REAL, loaded_at TEXT
       )`,
     ).run();
     await env.ERP.batch([
@@ -182,7 +182,9 @@ describe("built-in ERP job queries", () => {
           ('F-100', 1, '2026-05-01', 100, '${LOADED}'),
           ('F-200', 1, '2026-06-01', 200, '${LOADED}')
       `),
-      env.ERP.prepare(`INSERT INTO fact_reglements VALUES ('2026-06-15', 'C1', 120, '${LOADED}')`),
+      env.ERP.prepare(
+        `INSERT INTO fact_reglements VALUES ('R-120', '2026-06-15', 'C1', 120, '${LOADED}')`,
+      ),
     ]);
 
     const rows = await resolveDataSource(env, "erp").query(OVERDUE_PAYMENTS_SQL);
@@ -196,6 +198,30 @@ describe("built-in ERP job queries", () => {
         "Plus ancienne": "01/06/2026",
         "Retard max (jours)": expect.any(Number),
       },
+    ]);
+  });
+
+  it("uses the settlement document to identify the client when no sales document matches", async () => {
+    await env.ERP.batch([
+      env.ERP.prepare(`INSERT INTO dim_client VALUES ('C2', 'C', 'Client Réel', '${LOADED}')`),
+      env.ERP.prepare(`
+        INSERT INTO fact_echeances VALUES
+          ('R-900', 1, '2026-05-01', 250, '${LOADED}')
+      `),
+      env.ERP.prepare(
+        `INSERT INTO fact_reglements VALUES ('R-900', '2026-06-15', 'C2', 50, '${LOADED}')`,
+      ),
+    ]);
+
+    const rows = await resolveDataSource(env, "erp").query(OVERDUE_PAYMENTS_SQL);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        Client: "Client Réel",
+        Code: "C2",
+        Échéances: 1,
+        "Montant net estimé": "200,00 €",
+      }),
     ]);
   });
 });

@@ -225,13 +225,15 @@ load-bearing for write prevention, not belt-and-braces.
   margin (`qte × (pvnet − pmpa)`), margin rate, prior-day revenue change,
   documents, clients and quantity, with a dashboard link.
 - **`paiements-en-retard`** — every Monday at 07:00 UTC, `per_day`. It derives
-  client identity through `fact_echeances.numdoc → fact_ventes.numdoc`, nets
-  available `fact_reglements` at client level FIFO against the oldest due
-  items, selects remaining amounts at least 30 days overdue, and sends one
-  internal summary capped at 100 clients. Because the mirror cannot map a
-  payment to a specific invoice, the email labels this as an estimate that
-  does not replace accounting reconciliation. Weekly scheduling plus daily
-  slot dedupe prevents the same population from re-alerting every day.
+  client identity through the frozen loader's actual
+  `fact_echeances.numdoc → fact_reglements.numreg` relationship, with
+  `fact_ventes.numdoc` as a compatibility fallback; nets available payments at
+  client level FIFO against the oldest due items; selects remaining amounts at
+  least 30 days overdue; and sends one internal summary capped at 100 clients.
+  Because the mirror cannot map a payment to a specific invoice, the email
+  labels this as an estimate that does not replace accounting reconciliation.
+  Weekly scheduling plus daily slot dedupe prevents the same population from
+  re-alerting every day.
 
 Both are seeded disabled so the first real sends are deliberate; operators
 enable them after verification.
