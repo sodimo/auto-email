@@ -13,6 +13,8 @@ export interface Env {
 export type JobKind = "digest" | "condition";
 export type DedupeStrategy = "per_run" | "per_day" | "per_row";
 export type SendStatus = "pending" | "sent" | "failed" | "suppressed" | "skipped_test_mode";
+export type OutboxStatus = "pending" | "sent" | "failed" | "cancelled";
+export type AppendStatus = "appended" | "failed" | "skipped";
 
 export interface Job {
   id: number;
@@ -39,6 +41,21 @@ export interface Recipient {
   display_name: string | null;
 }
 
+/** A queued message, as the drain reads it back. */
+export interface OutboxRow {
+  id: number;
+  send_log_id: number;
+  job_id: number;
+  recipient: string;
+  recipient_name: string | null;
+  dedupe_key: string;
+  subject: string;
+  body_html: string;
+  body_text: string;
+  rfc_message_id: string;
+  attempts: number;
+}
+
 /** Every key is optional because a row can be missing from D1; the guard and
  *  the SMTP config both fail closed on absence rather than assuming a default. */
 export type Settings = {
@@ -48,19 +65,29 @@ export type Settings = {
   smtp_port?: string;
   from_address?: string;
   from_name?: string;
+  /** Empty = authenticate and bounce as from_address. */
+  smtp_username?: string;
+  /** Empty = replies go to from_address. */
+  reply_to?: string;
+  ehlo_hostname?: string;
+  imap_append?: string;
+  imap_host?: string;
+  imap_port?: string;
+  sent_folder_override?: string;
+  drain_batch_size?: string;
 } & Record<string, string | undefined>;
 
 /** A row produced by a condition job's SQL, or synthesised for a digest. */
 export type DataRow = Record<string, unknown>;
 
-/** What the runner reports back per job. Shape is the /trigger response body. */
+/** What enqueuing one job produced. Shape of the /trigger response body. */
 export interface JobResult {
   job: string;
   jobId: number;
   dedupeKeys: string[];
   rowCount: number;
   attempted: number;
-  sent: number;
+  queued: number;
   skipped: number;
   failed: number;
   duplicates: number;
