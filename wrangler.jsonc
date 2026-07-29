@@ -1,0 +1,46 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "auto-email",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  // worker-mailer opens raw TCP via `cloudflare:sockets`; nodejs_compat is required.
+  "compatibility_flags": ["nodejs_compat"],
+
+  // WAVE 1 ONLY: workers.dev stays ON so the token-gated /healthz and
+  // /trigger/:jobId endpoints are reachable for the first manual test send.
+  // Both endpoints require the TRIGGER_TOKEN secret header, so nothing is
+  // readable without it. Wave 2 attaches auto-email.sodimo.eu at the ACCOUNT
+  // level (Workers Domains API, same as the sibling `crm` Worker — the custom
+  // domain is NOT declared here as a zone `route`, because the deploy API token
+  // lacks zone Workers-Routes:Edit and re-asserting it would fail the deploy)
+  // and flips this to false.
+  "workers_dev": true,
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "auto-email",
+      // Filled in by .github/workflows/bootstrap.yml output after
+      // `wrangler d1 create auto-email` — commit the uuid it prints here.
+      // Ignored by the vitest workers pool (tests get a fresh local D1).
+      "database_id": "PLACEHOLDER-RUN-BOOTSTRAP-WORKFLOW",
+      "migrations_dir": "migrations"
+    }
+    // WAVE 3 SEAM: the read-only ERP mirror lands here as a SECOND binding
+    // named ERP (database_name "sodimo-prod"). See src/lib/datasource.ts.
+    // Never give it a migrations_dir — the NAS ETL owns that database.
+  ],
+
+  // The Worker cron tick. Job rows carry their OWN cron strings; this tick is
+  // only how often the scheduler wakes up to look for due jobs. Ticks are
+  // matched over a lookback window (see src/lib/cron.ts) so a job schedule need
+  // NOT align to a tick boundary. Keep TICK_MINUTES in src/config.ts in sync.
+  "triggers": { "crons": ["*/5 * * * *"] },
+
+  // SECRETS (never vars, never committed). Set with:
+  //   wrangler secret put STRATO_SMTP_PASSWORD   # Strato mailbox rapports@sodimo.eu
+  //   wrangler secret put TRIGGER_TOKEN          # shared secret for /trigger + /healthz
+  // Locally, put them in .dev.vars (gitignored). Typed in src/types.ts#Env.
+
+  "observability": { "enabled": true }
+}

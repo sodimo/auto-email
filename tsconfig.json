@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2022"],
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    // vitest-pool-workers/types is what declares the `cloudflare:test` module.
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true
+  },
+  // vitest.config.ts is deliberately out: it is a Node-side file, and pulling
+  // @types/node into the same program as @cloudflare/workers-types produces
+  // conflicting globals. Vitest itself fails loudly if that config is broken.
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}
