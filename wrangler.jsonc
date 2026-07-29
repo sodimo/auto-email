@@ -23,7 +23,7 @@
       // Filled in by .github/workflows/bootstrap.yml output after
       // `wrangler d1 create auto-email` — commit the uuid it prints here.
       // Ignored by the vitest workers pool (tests get a fresh local D1).
-      "database_id": "PLACEHOLDER-RUN-BOOTSTRAP-WORKFLOW",
+      "database_id": "febac9c7-596b-4a7d-9ce4-212ec0d4c20d",
       "migrations_dir": "migrations"
     }
     // WAVE 3 SEAM: the read-only ERP mirror lands here as a SECOND binding
