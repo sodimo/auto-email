@@ -68,7 +68,7 @@ src/lib/db.ts         typed reads; src/lib/datasource.ts source routing + SQL gu
 src/lib/erp.ts        production-mirror completeness/freshness gate
 src/lib/job-presets.ts canonical sales-digest and overdue-payment ERP queries
 vendor/worker-mailer/ patched SMTP client (MIT, see its README)
-migrations/           0001 schema through 0006 operational handoff
+migrations/           0001 schema through 0007 handoff queue cleanup
 ```
 
 ## Sharp edges

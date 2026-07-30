@@ -37,6 +37,10 @@ sending authority. At handoff, the only active member is
 `paul.ghafary@sodimo.eu`; `thomas@leger.run` and `tombionic@gmail.com` are
 removed by migration.
 
+The drain rechecks that each queued recipient is still active in the job's
+selected list. Pausing or removing an address while the global stop is holding
+the queue cancels that stale queued copy before SMTP when sending resumes.
+
 `settings.test_mode` remains a fail-closed emergency restriction. When on, the
 code allowlist (`src/lib/guard.ts#TEST_MODE_ALLOWLIST`) permits only Paul; any
 other recipient is logged `skipped_test_mode` and never contacted. The check

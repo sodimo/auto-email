@@ -7,6 +7,7 @@ import { enqueue } from "../src/lib/enqueue.js";
 import { smtpConfigFromSettings } from "../src/lib/mailer.js";
 import type { Job } from "../src/types.js";
 import {
+  addRecipient,
   FakeAppender,
   FakeTransport,
   insertJob,
@@ -197,6 +198,7 @@ describe("the guard runs again at drain time", () => {
     await queueMessages(1);
     // Simulates a row queued before the allowlist tightened.
     await env.DB.prepare("UPDATE outbox SET recipient = 'rani@sodimo.eu'").run();
+    await addRecipient("rani@sodimo.eu", "Rani");
     await setSetting("test_mode", "on");
     const transport = new FakeTransport();
 
@@ -206,6 +208,27 @@ describe("the guard runs again at drain time", () => {
     expect(transport.sent).toHaveLength(0);
     expect((await outbox())[0]!.status).toBe("cancelled");
     expect((await sendLog())[0]!.status).toBe("skipped_test_mode");
+  });
+
+  it("cancels a queued message after the UI recipient is paused", async () => {
+    await queueMessages(1);
+    await env.DB.prepare(
+      "UPDATE recipient_list_members SET active = 0 WHERE lower(email) = 'paul.ghafary@sodimo.eu'",
+    ).run();
+    const transport = new FakeTransport();
+
+    const summary = await drainOutbox(env, { transport, openAppender: noAppender });
+
+    expect(summary).toMatchObject({ cancelled: 1, sent: 0 });
+    expect(transport.opens).toBe(0);
+    expect((await outbox())[0]).toMatchObject({
+      status: "cancelled",
+      last_error: "recipient is no longer active in the job's selected list",
+    });
+    expect((await sendLog())[0]).toMatchObject({
+      status: "suppressed",
+      smtp_response: "recipient is no longer active in the job's selected list",
+    });
   });
 });
 

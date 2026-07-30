@@ -44,6 +44,7 @@ export interface DrainSummary {
 }
 
 const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+type DrainRow = OutboxRow & { recipient_active: number };
 
 function emptySummary(): DrainSummary {
   return { scanned: 0, sent: 0, failed: 0, retrying: 0, cancelled: 0, appended: 0, appendFailed: 0, errors: [] };
@@ -100,18 +101,57 @@ export async function drainOutbox(env: Env, options: DrainOptions = {}): Promise
   }
 
   const { results: rows } = await env.DB.prepare(
-    `SELECT id, send_log_id, job_id, recipient, recipient_name, dedupe_key,
-            subject, body_html, body_text, rfc_message_id, attempts
-       FROM outbox
-      WHERE status = 'pending' AND next_attempt_at <= ${NOW_SQL}
-      ORDER BY id
+    `SELECT o.id, o.send_log_id, o.job_id, o.recipient, o.recipient_name, o.dedupe_key,
+            o.subject, o.body_html, o.body_text, o.rfc_message_id, o.attempts,
+            EXISTS (
+              SELECT 1
+                FROM jobs j
+                JOIN recipient_list_members m ON m.list_id = j.recipient_list_id
+               WHERE j.id = o.job_id
+                 AND m.active = 1
+                 AND lower(trim(m.email)) = lower(trim(o.recipient))
+            ) AS recipient_active
+       FROM outbox o
+      WHERE o.status = 'pending' AND o.next_attempt_at <= ${NOW_SQL}
+      ORDER BY o.id
       LIMIT ?`,
   )
     .bind(batchSize(settings, options.limit))
-    .all<OutboxRow>();
+    .all<DrainRow>();
 
   summary.scanned = rows.length;
   if (rows.length === 0) return summary;
+
+  // Recipient-list changes are authoritative even after enqueue. This matters
+  // when the kill switch holds a queue while an operator pauses or removes an
+  // address: resuming must not deliver the stale queued copy.
+  const sendableRows: DrainRow[] = [];
+  for (const row of rows) {
+    const verdict = row.recipient_active === 1
+      ? guardRecipient(settings, row.recipient)
+      : {
+          allowed: false as const,
+          status: "suppressed" as const,
+          reason: "recipient is no longer active in the job's selected list",
+        };
+    if (verdict.allowed) {
+      sendableRows.push(row);
+      continue;
+    }
+    summary.cancelled++;
+    await env.DB.batch([
+      env.DB.prepare("UPDATE outbox SET status = 'cancelled', last_error = ? WHERE id = ?").bind(
+        verdict.reason,
+        row.id,
+      ),
+      env.DB.prepare(`UPDATE send_log SET status = ?, smtp_response = ?, sent_at = ${NOW_SQL} WHERE id = ?`).bind(
+        verdict.status,
+        verdict.reason,
+        row.send_log_id,
+      ),
+    ]);
+  }
+  if (sendableRows.length === 0) return summary;
 
   let session: MailSession;
   try {
@@ -131,24 +171,7 @@ export async function drainOutbox(env: Env, options: DrainOptions = {}): Promise
   let appenderTried = false;
 
   try {
-    for (const row of rows) {
-      const verdict = guardRecipient(settings, row.recipient);
-      if (!verdict.allowed) {
-        summary.cancelled++;
-        await env.DB.batch([
-          env.DB.prepare("UPDATE outbox SET status = 'cancelled', last_error = ? WHERE id = ?").bind(
-            verdict.reason,
-            row.id,
-          ),
-          env.DB.prepare(`UPDATE send_log SET status = ?, smtp_response = ?, sent_at = ${NOW_SQL} WHERE id = ?`).bind(
-            verdict.status,
-            verdict.reason,
-            row.send_log_id,
-          ),
-        ]);
-        continue;
-      }
-
+    for (const row of sendableRows) {
       // Built once, used by SMTP and IMAP alike.
       const raw = buildMessage({
         to: { email: row.recipient, name: row.recipient_name },
