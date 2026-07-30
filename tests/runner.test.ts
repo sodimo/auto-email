@@ -82,6 +82,22 @@ describe("enqueueDueJobs", () => {
     expect((await outbox()).map((r) => r.recipient)).toContain("rani@sodimo.eu");
     expect((await sendLog()).find((r) => r.recipient === "rani@sodimo.eu")?.status).toBe("pending");
   });
+
+  it("deduplicates an address that is both primary and configured as CC", async () => {
+    await insertJob({
+      name: "due",
+      schedule: "0 6 * * *",
+      cc_recipients_json: JSON.stringify(["paul.ghafary@sodimo.eu", "direction@sodimo.eu"]),
+    });
+
+    const summary = await enqueueDueJobs(env, TICK);
+
+    expect(summary.jobs[0]).toMatchObject({ attempted: 2, queued: 2 });
+    expect((await outbox()).map((row) => [row.recipient, row.recipient_kind])).toEqual([
+      ["paul.ghafary@sodimo.eu", "to"],
+      ["direction@sodimo.eu", "cc"],
+    ]);
+  });
 });
 
 describe("digest jobs", () => {
@@ -241,5 +257,79 @@ describe("enqueue then drain, end to end", () => {
     const log = await sendLog();
     expect(log.find((r) => r.recipient === "paul.ghafary@sodimo.eu")!.status).toBe("failed");
     expect(log.find((r) => r.recipient === "rani@sodimo.eu")!.status).toBe("sent");
+  });
+
+  it("delivers one copy to every primary and CC address with visible shared headers", async () => {
+    await addRecipient("rani@sodimo.eu", "Rani");
+    await insertJob({
+      name: "nightly-cc",
+      schedule: "0 6 * * *",
+      cc_recipients_json: JSON.stringify(["direction@sodimo.eu", "compta@sodimo.eu"]),
+    });
+    const transport = new FakeTransport();
+
+    const queued = await enqueueDueJobs(env, TICK);
+    expect(queued.jobs[0]).toMatchObject({ attempted: 4, queued: 4, failed: 0 });
+    const pending = await outbox();
+    expect(pending.filter((row) => row.recipient_kind === "to")).toHaveLength(2);
+    expect(pending.filter((row) => row.recipient_kind === "cc")).toHaveLength(2);
+
+    const drained = await drainOutbox(env, { transport, openAppender: noAppender });
+
+    expect(drained).toMatchObject({ scanned: 4, sent: 4, cancelled: 0 });
+    expect([...transport.recipients].sort()).toEqual([
+      "compta@sodimo.eu",
+      "direction@sodimo.eu",
+      "paul.ghafary@sodimo.eu",
+      "rani@sodimo.eu",
+    ]);
+    for (const sent of transport.sent) {
+      expect(sent.raw).toContain('To: "Paul Ghafary" <paul.ghafary@sodimo.eu>, "Rani" <rani@sodimo.eu>');
+      expect(sent.raw).toContain("Cc: direction@sodimo.eu, compta@sodimo.eu");
+      expect(sent.raw).not.toContain("Bcc:");
+    }
+  });
+
+  it("cancels a removed CC copy and removes that address from remaining headers", async () => {
+    const job = await insertJob({
+      name: "nightly-cc-change",
+      schedule: "0 6 * * *",
+      cc_recipients_json: JSON.stringify(["direction@sodimo.eu", "old-copy@sodimo.eu"]),
+    });
+    await enqueueDueJobs(env, TICK);
+    await env.DB.prepare("UPDATE jobs SET cc_recipients_json = ? WHERE id = ?")
+      .bind(JSON.stringify(["direction@sodimo.eu"]), job.id)
+      .run();
+    const transport = new FakeTransport();
+
+    const drained = await drainOutbox(env, { transport, openAppender: noAppender });
+
+    expect(drained).toMatchObject({ scanned: 3, sent: 2, cancelled: 1 });
+    expect(transport.recipients).toEqual(["paul.ghafary@sodimo.eu", "direction@sodimo.eu"]);
+    expect(transport.sent.every((sent) => !sent.raw.includes("old-copy@sodimo.eu"))).toBe(true);
+    expect((await outbox()).find((row) => row.recipient === "old-copy@sodimo.eu")).toMatchObject({
+      status: "cancelled",
+      last_error: "recipient is no longer configured as CC for the job",
+    });
+  });
+
+  it("keeps non-allowlisted CC addresses out of both delivery and headers in test mode", async () => {
+    await insertJob({
+      name: "nightly-cc-test-mode",
+      schedule: "0 6 * * *",
+      cc_recipients_json: JSON.stringify(["direction@sodimo.eu"]),
+    });
+    await setSetting("test_mode", "on");
+    const transport = new FakeTransport();
+
+    const queued = await enqueueDueJobs(env, TICK);
+    expect(queued.jobs[0]).toMatchObject({ attempted: 2, queued: 1, skipped: 1 });
+    await drainOutbox(env, { transport, openAppender: noAppender });
+
+    expect(transport.recipients).toEqual(["paul.ghafary@sodimo.eu"]);
+    expect(transport.sent[0]!.raw).not.toContain("direction@sodimo.eu");
+    expect((await sendLog()).find((row) => row.recipient === "direction@sodimo.eu")).toMatchObject({
+      status: "skipped_test_mode",
+    });
   });
 });

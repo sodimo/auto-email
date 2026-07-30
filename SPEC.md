@@ -32,14 +32,17 @@ where it stopped.
 
 ## Recipient control and emergency test mode
 
-Active recipient-list members managed in the administration UI are the normal
-sending authority. At handoff, the only active member is
+Active primary recipient-list members and optional visible per-job CC addresses
+managed in the administration UI are the normal sending authority. At handoff,
+the only active member is
 `paul.ghafary@sodimo.eu`; `thomas@leger.run` and `tombionic@gmail.com` are
-removed by migration.
+removed by migration, and both jobs start with no CC addresses.
 
-The drain rechecks that each queued recipient is still active in the job's
-selected list. Pausing or removing an address while the global stop is holding
-the queue cancels that stale queued copy before SMTP when sending resumes.
+The drain rechecks each queued recipient against its original role: primary
+addresses must still be active in the selected list and CC addresses must still
+be saved on the job. Pausing or removing an address while the global stop is
+holding the queue cancels that stale queued copy before SMTP when sending
+resumes and removes it from the remaining visible headers.
 
 `settings.test_mode` remains a fail-closed emergency restriction. When on, the
 code allowlist (`src/lib/guard.ts#TEST_MODE_ALLOWLIST`) permits only Paul; any
@@ -99,11 +102,14 @@ provider — which is every `@sodimo.eu` address. The Worker announces
 `settings.ehlo_hostname`, and **refuses to build an SMTP config when that
 setting is missing**, because a default here fails silently rather than loudly.
 
-### BCC does not exist
+### Visible CC exists; BCC does not
 
 Upstream's `bcc` option writes a literal `BCC:` header, exposing every recipient
-to all of them. It is deleted from the vendored copy, along with `cc`, so it
-cannot be reached by mistake. auto-email sends one message per recipient anyway.
+to all of them. It remains deleted from the vendored copy. Standard visible
+`Cc:` is supported: a job stores an ordered list of CC addresses, and every
+logical message snapshots its complete `To` and `Cc` headers. The outbox still
+contains one SMTP envelope row per unique address, so several primary recipients
+do not cause duplicate copies for the people in CC.
 
 ## Data model
 
@@ -111,7 +117,7 @@ Timestamps are ISO-8601 UTC TEXT. See all files in `migrations/` for the truth.
 
 - **jobs** — `name`, `display_name`, `kind` (`digest|condition`), `enabled`,
   `schedule` (5-field cron, UTC), `template_id`, `recipient_list_id`,
-  `condition_sql`, `dedupe_strategy`, `source` (`own|erp`) and `preset`
+  `cc_recipients_json`, `condition_sql`, `dedupe_strategy`, `source` (`own|erp`) and `preset`
   (`custom|sales_daily|overdue_30`). The admin UI converts four
   human-readable schedule forms to cron; it never asks a business user to type
   cron.
@@ -120,13 +126,14 @@ Timestamps are ISO-8601 UTC TEXT. See all files in `migrations/` for the truth.
 - **recipient_lists** / **recipient_list_members** — `email`, `display_name`, `active`.
 - **send_log** — the idempotency ledger *and* the audit trail. `status` ∈
   `pending | sent | failed | suppressed | skipped_test_mode`, plus
-  `smtp_response` and `message_id`, and — tracked **separately** —
+  `recipient_kind` (`to|cc`), `smtp_response` and `message_id`, and — tracked **separately** —
   `append_status` ∈ `appended | failed | skipped` with `append_response` (the
   `[APPENDUID …]` line). `UNIQUE (job_id, recipient, dedupe_key)`.
 - **outbox** — the work queue: one row per claimed ledger row, carrying the
   rendered `subject`/`body_html`/`body_text`, `rfc_message_id`, `status` ∈
   `pending | sent | failed | cancelled`, `attempts`, `next_attempt_at`,
-  `last_error`.
+  `last_error`, its `recipient_kind` (`to|cc`) and snapshots of the visible
+  `To`/`Cc` address sets.
 - **settings** — `kill_switch`, `test_mode`, `smtp_host`, `smtp_port`,
   `from_address`, `from_name`, `ehlo_hostname`, `imap_append`, `imap_host`,
   `imap_port`, `sent_folder_override`, `drain_batch_size`.
@@ -157,7 +164,8 @@ button.
 
 Kill switch → enabled jobs whose cron fired in the window this tick covers →
 per job: select the declared `own` or `erp` data source, run `condition_sql`
-(read-only) → render once → resolve recipients → per recipient: `enqueue`. Then
+(read-only) → render once → resolve and deduplicate primary plus CC recipients
+→ per recipient: `enqueue`. Then
 drain a batch. Every recipient is wrapped in its own try/catch at both stages;
 one failure never aborts the run.
 

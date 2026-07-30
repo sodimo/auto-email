@@ -11,8 +11,9 @@ The live French administration interface is at
 - a daily sales digest based on the latest complete ERP mirror;
 - a Monday summary of clients with estimated balances at least 30 days overdue.
 
-Messages are sent as `rapports@sodimo.eu` through Strato. The exact sent message
-is also filed in that mailbox's Sent folder. Delivery history, failures,
+`rapports@sodimo.eu` is the single system-wide sender for both jobs. Messages
+are sent through Strato, and the exact sent message is also filed in that
+mailbox's Sent folder. Delivery history, failures,
 recipient lists, templates, schedules and the global stop are visible in the
 web interface.
 
@@ -26,8 +27,9 @@ web interface.
 - The outbox is empty and the ERP readiness gate is healthy.
 
 This means Paul can inspect everything without an automatic email going out.
-When the stop is released, every active address in a job's selected list is a
-real recipient, so the list must be reviewed before pressing **Tester**.
+When the stop is released, every active address in a job's selected list and
+every CC address configured on that job is a real recipient, so both must be
+reviewed before pressing **Tester**.
 
 ## Access
 
@@ -43,8 +45,10 @@ username-and-password prompt and no trigger token to hand over.
 2. Open **Destinataires → Suivi clients** and confirm Paul is the only active
    address. Show how to add, pause, edit and remove an address.
 3. Review **Modèles** and the two jobs under **Envois**. Show that **Modifier**
-   chooses the schedule, model and recipient list, while **Activer** controls
-   scheduled runs.
+   chooses the schedule, model, recipient list and optional **Adresses en copie
+   (CC)**. **Ajouter une adresse en copie** creates another field; **Retirer**
+   removes one. CC addresses are visible to all recipients and receive one
+   copy each. **Activer** controls scheduled runs.
 4. Compare the overdue estimate with known Sodiwin balances before relying on
    it operationally.
 5. For one controlled test, release the global stop, use **Tester**
@@ -66,7 +70,8 @@ recipient/contact rules and message review.
 ## Before routine operation
 
 1. Paul validates a sample of overdue balances against Sodiwin.
-2. Paul confirms who should receive the daily digest and weekly overdue review.
+2. Paul confirms the primary list and any CC addresses for the daily digest and
+   weekly overdue review.
 3. Paul confirms the two schedules and which job may be activated.
 4. Only then: release the global stop and enable the approved jobs.
 

@@ -30,15 +30,16 @@ from npm because upstream is stale and auto-email needs changes it will not get.
 ## Removed
 
 `bcc` (upstream writes a literal `BCC:` header, leaking every recipient to all
-of them — deleted so it cannot be used by mistake), `cc`, attachments, DSN, the
-`BlockingQueue`, and the `static send()` one-shot helper. auto-email sends one
-message per recipient from a single pooled session, so none of it applies.
-Attachments come back only if the paid plan does (SPEC.md, non-goals).
+of them — deleted so it cannot be used by mistake), attachments, DSN, the
+`BlockingQueue`, and the `static send()` one-shot helper. Standard visible `cc`
+is retained for per-job copy recipients. auto-email sends one SMTP envelope per
+unique address from a single pooled session. Attachments come back only if the
+paid plan does (SPEC.md, non-goals).
 
 ## Updating
 
 There is no npm dependency to bump. To take upstream changes, diff against
 `v1.2.1` of the original repo and re-apply the three patches above. The
 `tests/vendor-mailer.test.ts` suite pins the behaviour that matters: the EHLO
-hostname reaches the wire, `buildMessage()` output is dot-stuffing-free, and
-nothing emits a BCC header.
+hostname reaches the wire, `buildMessage()` output is dot-stuffing-free,
+visible CC headers work, and nothing emits a BCC header.

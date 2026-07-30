@@ -114,6 +114,19 @@ describe("REMOVED — bcc cannot leak, because it does not exist", () => {
   });
 });
 
+describe("visible CC headers", () => {
+  it("emits every CC address while keeping BCC unavailable", () => {
+    const raw = decoder.decode(message({
+      to: ["paul.ghafary@sodimo.eu", "rani@sodimo.eu"],
+      cc: ["direction@sodimo.eu", "compta@sodimo.eu"],
+    }).buildMessage());
+
+    expect(raw).toContain("To: paul.ghafary@sodimo.eu, rani@sodimo.eu");
+    expect(raw).toContain("Cc: direction@sodimo.eu, compta@sodimo.eu");
+    expect(raw).not.toContain("Bcc:");
+  });
+});
+
 describe("PATCH 3 — failures carry a phase and a retry verdict", () => {
   it("retries only what provably did not deliver", () => {
     expect(new SmtpError("mail", "busy", "451 4.3.2 busy\r\n").retryable).toBe(true);

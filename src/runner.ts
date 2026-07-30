@@ -17,9 +17,9 @@ import { resolveDataSource } from "./lib/datasource.js";
 import { loadEnabledJobs, loadJob, loadRecipients, loadSettings, loadTemplate } from "./lib/db.js";
 import { enqueue } from "./lib/enqueue.js";
 import { assertErpReady } from "./lib/erp.js";
-import { guardRun } from "./lib/guard.js";
+import { guardRun, normalizeEmail } from "./lib/guard.js";
 import { buildRowsTableHtml, buildRowsText, frenchDate, render } from "./lib/render.js";
-import type { DataRow, Env, Job, JobResult, Settings } from "./types.js";
+import type { DataRow, Env, Job, JobResult, Recipient, RecipientKind, Settings } from "./types.js";
 
 export type Trigger = { kind: "cron"; slot: string } | { kind: "manual"; at: Date };
 
@@ -34,6 +34,38 @@ export interface RunSummary {
 interface Envelope {
   dedupeKey: string;
   vars: Record<string, unknown>;
+}
+
+function uniqueRecipients(recipients: Recipient[]): Recipient[] {
+  const seen = new Set<string>();
+  const result: Recipient[] = [];
+  for (const recipient of recipients) {
+    const address = normalizeEmail(recipient.email);
+    if (!address || seen.has(address)) continue;
+    seen.add(address);
+    result.push({ email: address, display_name: recipient.display_name });
+  }
+  return result;
+}
+
+function configuredCcRecipients(job: Job): Recipient[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(job.cc_recipients_json || "[]");
+  } catch {
+    throw new Error(`job ${job.name} has invalid CC configuration`);
+  }
+  if (!Array.isArray(parsed) || parsed.some((address) => typeof address !== "string")) {
+    throw new Error(`job ${job.name} has invalid CC configuration`);
+  }
+  const recipients = parsed.map((address) => ({
+    email: normalizeEmail(String(address)),
+    display_name: null,
+  }));
+  if (recipients.some((recipient) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient.email))) {
+    throw new Error(`job ${job.name} has invalid CC configuration`);
+  }
+  return uniqueRecipients(recipients);
 }
 
 function emptyResult(job: Job): JobResult {
@@ -109,11 +141,19 @@ export async function runJob(env: Env, settings: Settings, job: Job, trigger: Tr
     result.errors.push(`template ${job.template_id} not found`);
     return result;
   }
-  const recipients = await loadRecipients(env.DB, job.recipient_list_id);
+  const recipients = uniqueRecipients(await loadRecipients(env.DB, job.recipient_list_id));
   if (recipients.length === 0) {
     result.errors.push(`recipient list ${job.recipient_list_id} has no active members`);
     return result;
   }
+  const primaryAddresses = new Set(recipients.map((recipient) => recipient.email));
+  const ccRecipients = configuredCcRecipients(job).filter(
+    (recipient) => !primaryAddresses.has(recipient.email),
+  );
+  const deliveryRecipients: { recipient: Recipient; kind: RecipientKind }[] = [
+    ...recipients.map((recipient) => ({ recipient, kind: "to" as const })),
+    ...ccRecipients.map((recipient) => ({ recipient, kind: "cc" as const })),
+  ];
 
   let rows: DataRow[] = [];
   if (job.condition_sql) {
@@ -133,7 +173,7 @@ export async function runJob(env: Env, settings: Settings, job: Job, trigger: Tr
     const html = render(template.body_html, envelope.vars, { escape: true }).output;
     const text = render(template.body_text, envelope.vars, { escape: false }).output;
 
-    for (const recipient of recipients) {
+    for (const { recipient, kind } of deliveryRecipients) {
       result.attempted++;
       try {
         // One failure never aborts the run — not for the other recipients of
@@ -143,6 +183,9 @@ export async function runJob(env: Env, settings: Settings, job: Job, trigger: Tr
           settings,
           job,
           recipient,
+          recipientKind: kind,
+          toRecipients: recipients,
+          ccRecipients,
           dedupeKey: envelope.dedupeKey,
           subject,
           html,

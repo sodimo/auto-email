@@ -5,10 +5,11 @@ Cloudflare Worker via Strato SMTP, with a copy filed in the mailbox's Sent
 folder over IMAP. See [SPEC.md](SPEC.md) for the contract and
 [CLAUDE.md](CLAUDE.md) if you are an agent picking this up.
 
-Recipient lists in the administration UI are authoritative. The production
-handoff starts with only `paul.ghafary@sodimo.eu`, both jobs paused and the
-global stop engaged. An emergency test-mode setting can still pin sends to Paul
-alone, but it is not forced during normal operation.
+Primary recipient lists and each job's optional visible CC addresses in the
+administration UI are authoritative. The production handoff starts with only
+`paul.ghafary@sodimo.eu`, no CC addresses, both jobs paused and the global stop
+engaged. An emergency test-mode setting can still pin sends to Paul alone, but
+it is not forced during normal operation.
 
 ## Develop
 
@@ -85,7 +86,8 @@ purpose. The workflows use the org-level `CLOUDFLARE_API_TOKEN` /
 
 Open `https://auto-email.sodimo.eu/` and pass the usual Sodimo Cloudflare Access
 login. There is no HTTP Basic browser prompt. The French UI manages sendings,
-schedules, templates, recipient lists, history and the kill switch.
+schedules, templates, primary recipient lists, repeatable per-job CC fields,
+history and the kill switch.
 
 For the in-person business-owner walkthrough, use
 [`HANDOFF-PAUL.md`](HANDOFF-PAUL.md).
@@ -117,8 +119,9 @@ means engaged, and it **holds** the queue rather than discarding it — turning 
 back off resumes where it stopped. Use the prominent switch in **Sécurité**;
 do not operate production D1 through a laptop's personal wrangler login.
 `test_mode` is an emergency restriction: while on, only Paul can receive mail;
-while off, the active members of each UI list are authoritative. A missing or
-unrecognised value still fails closed as test mode on.
+while off, the active members of each UI list and the CC fields saved on each
+job are authoritative. A missing or unrecognised value still fails closed as
+test mode on.
 
 Other knobs worth knowing: `drain_batch_size` (default 10, capped at 25),
 `imap_append` (`on`/`off` for Sent copies), `sent_folder_override` (empty =

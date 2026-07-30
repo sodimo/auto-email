@@ -95,7 +95,11 @@ describe("admin authentication and page", () => {
     expect(html).toContain("Arrêt général");
     expect(html).toContain("Cloudflare Access");
     expect(html).toContain("Cette page fait foi");
+    expect(html).toContain("Ajouter une adresse en copie");
     expect(html).not.toContain("0 6 * * *");
+    const inlineScript = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)?.[1];
+    expect(inlineScript).toBeTruthy();
+    expect(() => new Function(inlineScript!)).not.toThrow();
     expect((await accessRequest("GET", "/api/admin/state")).status).toBe(200);
   });
 
@@ -123,6 +127,8 @@ describe("admin state and job management", () => {
       preset: "sales_daily",
       schedule: { cadence: "daily", hour: 6, minute: 0 },
       schedule_label: "Tous les jours à 06:00 UTC",
+      cc_recipients: [],
+      cc_count: 0,
     });
     expect(snapshot.safety).toMatchObject({
       kill_switch: "off",
@@ -175,6 +181,70 @@ describe("admin state and job management", () => {
         .bind(id)
         .first(),
     ).toEqual({ display_name: "Rapport du mardi", schedule: "30 8 * * 2", enabled: 1 });
+  });
+
+  it("stores, normalizes and replaces multiple job-level CC addresses", async () => {
+    const snapshot = await state();
+    const template = snapshot.templates.find((item: any) => item.name === "test-generic");
+    const list = snapshot.recipient_lists.find((item: any) => item.name === "suivi-clients");
+    const payload = {
+      display_name: "Rapport avec copies",
+      kind: "digest",
+      enabled: false,
+      schedule: { cadence: "daily", hour: 9, minute: 0 },
+      template_id: template.id,
+      recipient_list_id: list.id,
+      cc_recipients: ["DIRECTION@SODIMO.EU", "compta@sodimo.eu"],
+      condition_sql: null,
+      dedupe_strategy: "per_day",
+      source: "own",
+      preset: "custom",
+    };
+
+    const created = await request("POST", "/api/admin/jobs", payload);
+    expect(created.status).toBe(201);
+    const id = (await created.json() as any).id;
+    expect(
+      await env.DB.prepare("SELECT cc_recipients_json FROM jobs WHERE id = ?").bind(id).first(),
+    ).toEqual({ cc_recipients_json: '["direction@sodimo.eu","compta@sodimo.eu"]' });
+    expect((await state()).jobs.find((job: any) => job.id === id)).toMatchObject({
+      cc_recipients: ["direction@sodimo.eu", "compta@sodimo.eu"],
+      cc_count: 2,
+    });
+
+    const updated = await request("PUT", `/api/admin/jobs/${id}`, {
+      ...payload,
+      cc_recipients: ["commercial@sodimo.eu"],
+    });
+    expect(updated.status).toBe(200);
+    expect((await state()).jobs.find((job: any) => job.id === id)).toMatchObject({
+      cc_recipients: ["commercial@sodimo.eu"],
+      cc_count: 1,
+    });
+  });
+
+  it("rejects invalid and duplicate CC addresses", async () => {
+    const snapshot = await state();
+    const base = {
+      display_name: "Copies invalides",
+      kind: "digest",
+      enabled: false,
+      schedule: { cadence: "daily", hour: 9, minute: 0 },
+      template_id: snapshot.templates[0].id,
+      recipient_list_id: snapshot.recipient_lists[0].id,
+      condition_sql: null,
+      dedupe_strategy: "per_day",
+      source: "own",
+      preset: "custom",
+    };
+    expect((await request("POST", "/api/admin/jobs", {
+      ...base,
+      cc_recipients: ["adresse-invalide"],
+    })).status).toBe(400);
+    expect((await request("POST", "/api/admin/jobs", {
+      ...base,
+      cc_recipients: ["COPIE@sodimo.eu", "copie@sodimo.eu"],
+    })).status).toBe(400);
   });
 
   it("rejects raw cron input and unsafe custom conditions", async () => {

@@ -6,7 +6,7 @@
 // mailer.ts; IMAP APPEND needs these bytes unmodified.
 //
 // REMOVED: bcc (upstream emitted a literal BCC: header, exposing every
-// recipient to all of them), cc, attachments, DSN.
+// recipient to all of them), attachments, DSN. Visible CC is supported.
 import { encode, encodeQuotedPrintable } from "./utils.js";
 
 export type User = { name?: string; email: string };
@@ -14,6 +14,7 @@ export type User = { name?: string; email: string };
 export type EmailOptions = {
   from: string | User;
   to: string | string[] | User | User[];
+  cc?: string | string[] | User | User[];
   reply?: string | User;
   subject: string;
   text?: string;
@@ -53,6 +54,7 @@ function formatAddress(user: User): string {
 export class Email {
   readonly from: User;
   readonly to: User[];
+  readonly cc: User[];
   readonly reply?: User;
   readonly subject: string;
   readonly text?: string;
@@ -66,6 +68,7 @@ export class Email {
     this.from = typeof options.from === "string" ? { email: options.from } : options.from;
     this.reply = typeof options.reply === "string" ? { email: options.reply } : options.reply;
     this.to = toUsers(options.to)!;
+    this.cc = toUsers(options.cc) ?? [];
     this.subject = options.subject;
     this.text = options.text;
     this.html = options.html;
@@ -84,6 +87,7 @@ export class Email {
   private resolveHeaders(): void {
     this.headers["From"] ??= formatAddress(this.from);
     this.headers["To"] ??= this.to.map(formatAddress).join(", ");
+    if (this.cc.length > 0) this.headers["Cc"] ??= this.cc.map(formatAddress).join(", ");
     if (this.reply) this.headers["Reply-To"] ??= formatAddress(this.reply);
     if (this.subject) this.headers["Subject"] ??= encodeHeader(this.subject);
     this.headers["Date"] ??= new Date().toUTCString();

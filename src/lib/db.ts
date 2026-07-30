@@ -9,7 +9,7 @@ export async function loadSettings(db: D1Database): Promise<Settings> {
 }
 
 const JOB_COLUMNS =
-  "id, name, display_name, kind, enabled, schedule, template_id, recipient_list_id, condition_sql, dedupe_strategy, source, preset";
+  "id, name, display_name, kind, enabled, schedule, template_id, recipient_list_id, cc_recipients_json, condition_sql, dedupe_strategy, source, preset";
 
 export async function loadEnabledJobs(db: D1Database): Promise<Job[]> {
   const { results } = await db

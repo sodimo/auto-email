@@ -282,7 +282,10 @@ export class WorkerMailer {
   /** Convenience wrapper: build the message and send it in one call. */
   async send(options: EmailOptions): Promise<string> {
     const email = new Email(options);
-    return await this.sendRaw({ from: email.from.email, to: email.to.map((u) => u.email) }, email.buildMessage());
+    return await this.sendRaw(
+      { from: email.from.email, to: [...email.to, ...email.cc].map((user) => user.email) },
+      email.buildMessage(),
+    );
   }
 
   /**

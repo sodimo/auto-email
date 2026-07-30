@@ -271,6 +271,9 @@ export function adminPage(nonce: string): string {
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
     .form-grid .full { grid-column: 1 / -1; }
     .form-grid .thirds { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .cc-list { display: grid; gap: 8px; margin: 7px 0 8px; }
+    .cc-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .cc-row button { white-space: nowrap; }
     details {
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -540,6 +543,12 @@ export function adminPage(nonce: string): string {
             <select id="job-list" required></select>
           </div>
           <div class="full">
+            <label>Adresses en copie (CC)</label>
+            <div id="job-cc-list" class="cc-list"></div>
+            <button id="job-add-cc" type="button">Ajouter une adresse en copie</button>
+            <p class="field-help">Facultatif. Ces adresses sont visibles par tous les destinataires et reçoivent chacune un seul exemplaire. Une adresse déjà présente dans la liste principale n’est pas envoyée deux fois.</p>
+          </div>
+          <div class="full">
             <label>Programmation</label>
             <div class="thirds">
               <select id="job-cadence" aria-label="Fréquence">
@@ -732,8 +741,8 @@ export function adminPage(nonce: string): string {
       $("#recipient-mode-head").textContent = "Mode test";
       return;
     }
-    $("#test-notice").innerHTML = "<strong>Listes actives.</strong> Un test ou un envoi programmé part vers chaque adresse active de la liste choisie. Vérifiez la liste avant de lancer un test.";
-    $("#recipient-notice").innerHTML = "<strong>Cette page fait foi.</strong> Une adresse active reçoit les messages de cette liste ; mettez-la en pause ou retirez-la pour interrompre ses envois.";
+    $("#test-notice").innerHTML = "<strong>Destinataires actifs.</strong> Un test ou un envoi programmé part une fois vers chaque adresse de la liste choisie et chaque adresse en copie configurée sur l’envoi.";
+    $("#recipient-notice").innerHTML = "<strong>Cette page fait foi pour les listes principales.</strong> Les adresses en copie se règlent séparément dans chaque envoi.";
     $("#recipient-mode-head").textContent = "Destinataires gérés ici";
   }
 
@@ -754,7 +763,7 @@ export function adminPage(nonce: string): string {
       return "<tr>" +
         '<td><div class="cell-title">' + esc(label) + '</div><div class="cell-sub">' + kind + " · " + esc(friendlyTemplateName(job.template_name)) + "</div></td>" +
         "<td>" + esc(job.schedule_label) + "</td>" +
-        '<td><div class="cell-title">' + esc(friendlyListName(job.recipient_list_name)) + '</div><div class="cell-sub">' + job.active_recipients + " actif(s)</div></td>" +
+        '<td><div class="cell-title">' + esc(friendlyListName(job.recipient_list_name)) + '</div><div class="cell-sub">' + job.active_recipients + " principal(aux) · " + job.cc_count + " en copie</div></td>" +
         "<td>" + esc(last) + "</td>" +
         '<td><span class="status ' + stateClass + '">' + stateText + "</span></td>" +
         '<td class="actions">' +
@@ -830,7 +839,7 @@ export function adminPage(nonce: string): string {
     $("#history-body").innerHTML = rows.length ? rows.map((item) =>
       "<tr><td>" + esc(dateFr(item.sent_at)) + "</td>" +
       '<td><div class="cell-title">' + esc(item.job_label) + '</div><div class="cell-sub">' + esc(item.subject || "") + "</div></td>" +
-      "<td>" + esc(item.recipient) + "</td>" +
+      '<td><div>' + esc(item.recipient) + '</div><div class="cell-sub">' + (item.recipient_kind === "cc" ? "Copie (CC)" : "Destinataire principal") + "</div></td>" +
       '<td><span class="status ' + statusClass(item.status) + '">' + esc(statusLabel[item.status] || item.status) + "</span></td>" +
       '<td><span class="status ' + statusClass(item.append_status) + '">' + esc(statusLabel[item.append_status] || item.append_status || "—") + "</span></td>" +
       '<td class="actions"><button type="button" data-history="' + item.id + '">Détails</button></td></tr>'
@@ -887,6 +896,27 @@ export function adminPage(nonce: string): string {
     return '<option value="' + esc(value) + '"' + (String(value) === String(selected) ? " selected" : "") + ">" + esc(label) + "</option>";
   }
 
+  function addCcField(value) {
+    const row = document.createElement("div");
+    row.className = "cc-row";
+    const input = document.createElement("input");
+    input.type = "email";
+    input.value = value || "";
+    input.placeholder = "nom@sodimo.eu";
+    input.setAttribute("aria-label", "Adresse en copie");
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.dataset.ccRemove = "true";
+    remove.textContent = "Retirer";
+    row.append(input, remove);
+    $("#job-cc-list").append(row);
+  }
+
+  function renderCcFields(recipients) {
+    $("#job-cc-list").textContent = "";
+    (recipients && recipients.length ? recipients : [""]).forEach(addCcField);
+  }
+
   function setPeriodOptions(schedule) {
     const cadence = $("#job-cadence").value;
     const select = $("#job-period-value");
@@ -938,6 +968,7 @@ export function adminPage(nonce: string): string {
     $("#job-kind").value = creating ? "digest" : job.kind;
     $("#job-template").innerHTML = state.templates.map((item) => option(item.id, friendlyTemplateName(item.name), job && job.template_id)).join("");
     $("#job-list").innerHTML = state.recipient_lists.map((item) => option(item.id, friendlyListName(item.name), job && job.recipient_list_id)).join("");
+    renderCcFields(job && job.cc_recipients);
     $("#job-cadence").value = schedule.cadence;
     $("#job-time").value = String(schedule.hour).padStart(2, "0") + ":" + String(schedule.minute).padStart(2, "0");
     setPeriodOptions(schedule);
@@ -1016,6 +1047,12 @@ export function adminPage(nonce: string): string {
     try {
       if (button.dataset.view) return showView(button.dataset.view);
       if (button.dataset.close) return document.getElementById(button.dataset.close).close();
+      if (button.id === "job-add-cc") return addCcField("");
+      if (button.dataset.ccRemove) {
+        button.closest(".cc-row").remove();
+        if (!$("#job-cc-list").children.length) addCcField("");
+        return;
+      }
       if (button.id === "new-job") return openJob(null);
       if (button.id === "new-template") return openTemplate(null);
       if (button.id === "new-list") {
@@ -1033,7 +1070,7 @@ export function adminPage(nonce: string): string {
       }
       if (button.dataset.jobTest) {
         const job = state.jobs.find((item) => String(item.id) === button.dataset.jobTest);
-        if (!confirm("Envoyer maintenant un test de « " + (job.display_name || job.name) + " » aux destinataires actifs de sa liste ?")) return;
+        if (!confirm("Envoyer maintenant « " + (job.display_name || job.name) + " » aux " + job.active_recipients + " destinataire(s) principal(aux) et " + job.cc_count + " adresse(s) en copie ?")) return;
         button.disabled = true;
         const result = await api("POST", "/api/admin/jobs/" + job.id + "/trigger");
         const sent = result.drained && result.drained.sent || 0;
@@ -1071,6 +1108,7 @@ export function adminPage(nonce: string): string {
         $("#history-detail").innerHTML =
           '<dl class="definition"><dt>Envoi</dt><dd>' + esc(item.job_label) + "</dd>" +
           "<dt>Destinataire</dt><dd>" + esc(item.recipient) + "</dd>" +
+          "<dt>Rôle</dt><dd>" + (item.recipient_kind === "cc" ? "Copie (CC)" : "Destinataire principal") + "</dd>" +
           "<dt>Message-ID</dt><dd>" + esc(item.message_id || "—") + "</dd>" +
           "<dt>Clé anti-doublon</dt><dd>" + esc(item.dedupe_key) + "</dd>" +
           "<dt>Tentatives</dt><dd>" + esc(item.attempts == null ? "—" : item.attempts) + "</dd></dl>" +
@@ -1116,6 +1154,7 @@ export function adminPage(nonce: string): string {
       preset: $("#job-preset").value,
       template_id: Number($("#job-template").value),
       recipient_list_id: Number($("#job-list").value),
+      cc_recipients: $$("#job-cc-list input").map((input) => input.value.trim()).filter(Boolean),
       schedule,
       enabled: $("#job-enabled").checked,
       source: $("#job-source").value,

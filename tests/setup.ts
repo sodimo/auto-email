@@ -34,6 +34,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM test_invoices"),
     env.DB.prepare("DELETE FROM sqlite_sequence WHERE name IN ('send_log', 'outbox')"),
     env.DB.prepare("DELETE FROM jobs WHERE name NOT IN ('rapport-nightly', 'paiements-en-retard')"),
+    env.DB.prepare("UPDATE jobs SET cc_recipients_json = '[]'"),
     env.DB.prepare(
       `UPDATE jobs
           SET enabled = 0, schedule = '0 6 * * *', kind = 'digest',

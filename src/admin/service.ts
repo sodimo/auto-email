@@ -1,7 +1,7 @@
 import { FORCE_TEST_MODE } from "../config.js";
 import { assertReadOnlySql } from "../lib/datasource.js";
 import { erpReadiness, type ErpReadiness } from "../lib/erp.js";
-import { TEST_MODE_ALLOWLIST } from "../lib/guard.js";
+import { normalizeEmail, TEST_MODE_ALLOWLIST } from "../lib/guard.js";
 import { sqlForPreset } from "../lib/job-presets.js";
 import type {
   DataSourceName,
@@ -102,10 +102,39 @@ interface NormalizedJobInput {
   schedule: string;
   templateId: number;
   recipientListId: number;
+  ccRecipients: string[];
   conditionSql: string | null;
   dedupeStrategy: DedupeStrategy;
   source: DataSourceName;
   preset: JobPreset;
+}
+
+const MAX_CC_RECIPIENTS = 100;
+
+function normalizeCcRecipients(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new AdminInputError("Les adresses en copie doivent être envoyées sous forme de liste.");
+  }
+  if (value.length > MAX_CC_RECIPIENTS) {
+    throw new AdminInputError(`Un envoi accepte au maximum ${MAX_CC_RECIPIENTS} adresses en copie.`);
+  }
+
+  const recipients = value.map((address) => email(address));
+  if (new Set(recipients).size !== recipients.length) {
+    throw new AdminInputError("Une même adresse ne peut figurer qu’une fois en copie.");
+  }
+  return recipients;
+}
+
+function storedCcRecipients(value: string | null | undefined): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((address): address is string => typeof address === "string");
+  } catch {
+    return [];
+  }
 }
 
 function normalizeJobInput(value: unknown): NormalizedJobInput {
@@ -171,6 +200,7 @@ function normalizeJobInput(value: unknown): NormalizedJobInput {
     schedule,
     templateId: positiveId(body["template_id"], "Le modèle"),
     recipientListId: positiveId(body["recipient_list_id"], "La liste de destinataires"),
+    ccRecipients: normalizeCcRecipients(body["cc_recipients"]),
     conditionSql,
     dedupeStrategy,
     source,
@@ -210,9 +240,9 @@ export async function createJob(db: D1Database, value: unknown): Promise<{ id: n
     .prepare(
       `INSERT INTO jobs (
          name, display_name, kind, enabled, schedule, template_id,
-         recipient_list_id, condition_sql, dedupe_strategy, source, preset
+         recipient_list_id, cc_recipients_json, condition_sql, dedupe_strategy, source, preset
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`,
     )
     .bind(
@@ -223,6 +253,7 @@ export async function createJob(db: D1Database, value: unknown): Promise<{ id: n
       input.schedule,
       input.templateId,
       input.recipientListId,
+      JSON.stringify(input.ccRecipients),
       input.conditionSql,
       input.dedupeStrategy,
       input.source,
@@ -242,7 +273,7 @@ export async function updateJob(db: D1Database, idValue: unknown, value: unknown
       `UPDATE jobs
           SET display_name = ?, kind = ?, enabled = ?, schedule = ?,
               template_id = ?, recipient_list_id = ?, condition_sql = ?,
-              dedupe_strategy = ?, source = ?, preset = ?,
+              cc_recipients_json = ?, dedupe_strategy = ?, source = ?, preset = ?,
               updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
         WHERE id = ?`,
     )
@@ -254,6 +285,7 @@ export async function updateJob(db: D1Database, idValue: unknown, value: unknown
       input.templateId,
       input.recipientListId,
       input.conditionSql,
+      JSON.stringify(input.ccRecipients),
       input.dedupeStrategy,
       input.source,
       input.preset,
@@ -508,6 +540,7 @@ interface AdminJobRow {
   recipient_list_id: number;
   recipient_list_name: string;
   active_recipients: number;
+  cc_recipients_json: string;
   condition_sql: string | null;
   dedupe_strategy: DedupeStrategy;
   source: DataSourceName;
@@ -525,7 +558,7 @@ export async function loadAdminState(env: Env): Promise<unknown> {
            j.template_id, t.name AS template_name,
            j.recipient_list_id, l.name AS recipient_list_name,
            COUNT(DISTINCT CASE WHEN m.active = 1 THEN m.id END) AS active_recipients,
-           j.condition_sql, j.dedupe_strategy, j.source, j.preset,
+           j.cc_recipients_json, j.condition_sql, j.dedupe_strategy, j.source, j.preset,
            (SELECT sent_at FROM send_log s WHERE s.job_id = j.id ORDER BY s.id DESC LIMIT 1) AS last_sent_at,
            (SELECT status FROM send_log s WHERE s.job_id = j.id ORDER BY s.id DESC LIMIT 1) AS last_status
          FROM jobs j
@@ -561,7 +594,7 @@ export async function loadAdminState(env: Env): Promise<unknown> {
       ).all(),
       env.DB.prepare(
         `SELECT
-           s.id, s.sent_at, s.recipient, s.dedupe_key, s.status,
+           s.id, s.sent_at, s.recipient, s.recipient_kind, s.dedupe_key, s.status,
            s.smtp_response, s.message_id, s.append_status, s.append_response,
            j.name AS job_name, COALESCE(j.display_name, j.name) AS job_label,
            o.subject, o.attempts, o.last_error
@@ -593,14 +626,27 @@ export async function loadAdminState(env: Env): Promise<unknown> {
     };
   }
 
+  const activeRecipientsByList = new Map<number, Set<string>>();
+  for (const row of membersResult.results as Array<Record<string, unknown>>) {
+    if (Number(row["active"]) !== 1) continue;
+    const listId = Number(row["list_id"]);
+    const addresses = activeRecipientsByList.get(listId) ?? new Set<string>();
+    addresses.add(normalizeEmail(String(row["email"] ?? "")));
+    activeRecipientsByList.set(listId, addresses);
+  }
+
   const jobs = jobsResult.results.map((job) => {
     const schedule = cronToSchedule(job.schedule);
+    const ccRecipients = storedCcRecipients(job.cc_recipients_json);
+    const primaryAddresses = activeRecipientsByList.get(job.recipient_list_id) ?? new Set<string>();
     return {
       ...job,
       enabled: job.enabled === 1,
       schedule,
       schedule_label: scheduleLabel(schedule),
       active_recipients: Number(job.active_recipients),
+      cc_recipients: ccRecipients,
+      cc_count: ccRecipients.filter((address) => !primaryAddresses.has(normalizeEmail(address))).length,
     };
   });
 

@@ -28,10 +28,10 @@ create resources from here**. `bootstrap.yml` and `deploy.yml` do that in CI.
   repo that talks to SMTP. A second path around either defeats the idempotency
   ledger and the guard in one move. New sending features go *through* them.
 - **`src/lib/guard.ts` is the only place that applies global safety gates.**
-  Active UI recipient-list rows govern normal sends. If `settings.test_mode` is
-  re-enabled, `TEST_MODE_ALLOWLIST` pins the emergency scope to Paul. Do not
-  widen it to "make testing easier". The guard runs at enqueue AND at drain;
-  keep it that way.
+  Active UI recipient-list rows and per-job CC fields govern normal sends. If
+  `settings.test_mode` is re-enabled, `TEST_MODE_ALLOWLIST` pins the emergency
+  scope to Paul. Do not widen it to "make testing easier". The guard runs at
+  enqueue AND at drain; keep it that way.
 - Both switches fail closed. Absent or unrecognised value ⇒ kill switch engaged,
   test mode on. Never "helpfully" default them permissive.
 - Claim first, then queue, then send, then settle. Never send before the
@@ -68,7 +68,7 @@ src/lib/db.ts         typed reads; src/lib/datasource.ts source routing + SQL gu
 src/lib/erp.ts        production-mirror completeness/freshness gate
 src/lib/job-presets.ts canonical sales-digest and overdue-payment ERP queries
 vendor/worker-mailer/ patched SMTP client (MIT, see its README)
-migrations/           0001 schema through 0007 handoff queue cleanup
+migrations/           0001 schema through 0008 job-level CC delivery
 ```
 
 ## Sharp edges

@@ -87,6 +87,7 @@ export async function insertJob(overrides: Partial<Job> & { name: string }): Pro
     schedule: "0 6 * * *",
     template_id: await templateId(),
     recipient_list_id: await testListId(),
+    cc_recipients_json: "[]",
     condition_sql: null,
     dedupe_strategy: "per_run" as const,
     source: "own" as const,
@@ -96,9 +97,9 @@ export async function insertJob(overrides: Partial<Job> & { name: string }): Pro
   const row = await env.DB.prepare(
     `INSERT INTO jobs (
        name, display_name, kind, enabled, schedule, template_id,
-       recipient_list_id, condition_sql, dedupe_strategy, source, preset
+       recipient_list_id, cc_recipients_json, condition_sql, dedupe_strategy, source, preset
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   )
     .bind(
       job.name,
@@ -108,6 +109,7 @@ export async function insertJob(overrides: Partial<Job> & { name: string }): Pro
       job.schedule,
       job.template_id,
       job.recipient_list_id,
+      job.cc_recipients_json,
       job.condition_sql,
       job.dedupe_strategy,
       job.source,
@@ -120,6 +122,7 @@ export async function insertJob(overrides: Partial<Job> & { name: string }): Pro
 export interface SendLogRow {
   job_id: number;
   recipient: string;
+  recipient_kind: string;
   dedupe_key: string;
   status: string;
   smtp_response: string | null;
@@ -129,7 +132,7 @@ export interface SendLogRow {
 
 export async function sendLog(): Promise<SendLogRow[]> {
   const { results } = await env.DB.prepare(
-    `SELECT job_id, recipient, dedupe_key, status, smtp_response, append_status, append_response
+    `SELECT job_id, recipient, recipient_kind, dedupe_key, status, smtp_response, append_status, append_response
        FROM send_log ORDER BY id`,
   ).all<SendLogRow>();
   return results;
@@ -144,11 +147,15 @@ export interface OutboxSnapshot {
   next_attempt_at: string;
   last_error: string | null;
   subject: string;
+  recipient_kind: string;
+  to_recipients_json: string;
+  cc_recipients_json: string;
 }
 
 export async function outbox(): Promise<OutboxSnapshot[]> {
   const { results } = await env.DB.prepare(
-    `SELECT id, recipient, dedupe_key, status, attempts, next_attempt_at, last_error, subject
+    `SELECT id, recipient, dedupe_key, status, attempts, next_attempt_at, last_error, subject,
+            recipient_kind, to_recipients_json, cc_recipients_json
        FROM outbox ORDER BY id`,
   ).all<OutboxSnapshot>();
   return results;

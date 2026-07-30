@@ -17,6 +17,7 @@ export type JobPreset = "custom" | "sales_daily" | "overdue_30";
 export type SendStatus = "pending" | "sent" | "failed" | "suppressed" | "skipped_test_mode";
 export type OutboxStatus = "pending" | "sent" | "failed" | "cancelled";
 export type AppendStatus = "appended" | "failed" | "skipped";
+export type RecipientKind = "to" | "cc";
 
 export interface Job {
   id: number;
@@ -27,6 +28,7 @@ export interface Job {
   schedule: string;
   template_id: number;
   recipient_list_id: number;
+  cc_recipients_json: string;
   condition_sql: string | null;
   dedupe_strategy: DedupeStrategy;
   source: DataSourceName;
@@ -47,6 +49,12 @@ export interface Recipient {
   display_name: string | null;
 }
 
+/** Address shape persisted in an outbox header snapshot. */
+export interface MessageAddress {
+  email: string;
+  name: string | null;
+}
+
 /** A queued message, as the drain reads it back. */
 export interface OutboxRow {
   id: number;
@@ -54,6 +62,9 @@ export interface OutboxRow {
   job_id: number;
   recipient: string;
   recipient_name: string | null;
+  recipient_kind: RecipientKind;
+  to_recipients_json: string;
+  cc_recipients_json: string;
   dedupe_key: string;
   subject: string;
   body_html: string;

@@ -14,7 +14,7 @@
  */
 import { guardRecipient, normalizeEmail } from "./guard.js";
 import { newMessageId } from "./mailer.js";
-import type { Job, Recipient, SendStatus, Settings } from "../types.js";
+import type { Job, MessageAddress, Recipient, RecipientKind, SendStatus, Settings } from "../types.js";
 
 export type EnqueueOutcome =
   | { result: "queued"; sendLogId: number; messageId: string }
@@ -27,6 +27,9 @@ export interface EnqueueRequest {
   settings: Settings;
   job: Pick<Job, "id" | "name">;
   recipient: Recipient;
+  recipientKind?: RecipientKind;
+  toRecipients?: Recipient[];
+  ccRecipients?: Recipient[];
   dedupeKey: string;
   subject: string;
   html: string;
@@ -34,6 +37,18 @@ export interface EnqueueRequest {
 }
 
 export const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+
+function snapshot(recipients: Recipient[]): MessageAddress[] {
+  const seen = new Set<string>();
+  const result: MessageAddress[] = [];
+  for (const recipient of recipients) {
+    const address = normalizeEmail(recipient.email);
+    if (!address || seen.has(address)) continue;
+    seen.add(address);
+    result.push({ email: address, name: recipient.display_name ?? null });
+  }
+  return result;
+}
 
 /** Records a terminal outcome for a triple we never intend to attempt. */
 export async function logTerminal(
@@ -43,14 +58,15 @@ export async function logTerminal(
   dedupeKey: string,
   status: SendStatus,
   reason: string,
+  recipientKind: RecipientKind = "to",
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO send_log (job_id, recipient, dedupe_key, status, smtp_response, sent_at)
-       VALUES (?, ?, ?, ?, ?, ${NOW_SQL})
+      `INSERT INTO send_log (job_id, recipient, recipient_kind, dedupe_key, status, smtp_response, sent_at)
+       VALUES (?, ?, ?, ?, ?, ?, ${NOW_SQL})
        ON CONFLICT (job_id, recipient, dedupe_key) DO NOTHING`,
     )
-    .bind(jobId, recipient, dedupeKey, status, reason)
+    .bind(jobId, recipient, recipientKind, dedupeKey, status, reason)
     .run();
 }
 
@@ -61,15 +77,16 @@ async function claim(
   recipient: string,
   dedupeKey: string,
   messageId: string,
+  recipientKind: RecipientKind,
 ): Promise<number | null> {
   const row = await db
     .prepare(
-      `INSERT INTO send_log (job_id, recipient, dedupe_key, status, message_id, sent_at)
-       VALUES (?, ?, ?, 'pending', ?, ${NOW_SQL})
+      `INSERT INTO send_log (job_id, recipient, recipient_kind, dedupe_key, status, message_id, sent_at)
+       VALUES (?, ?, ?, ?, 'pending', ?, ${NOW_SQL})
        ON CONFLICT (job_id, recipient, dedupe_key) DO NOTHING
        RETURNING id`,
     )
-    .bind(jobId, recipient, dedupeKey, messageId)
+    .bind(jobId, recipient, recipientKind, dedupeKey, messageId)
     .first<{ id: number }>();
   return row?.id ?? null;
 }
@@ -77,37 +94,48 @@ async function claim(
 export async function enqueue(request: EnqueueRequest): Promise<EnqueueOutcome> {
   const { db, settings, job, dedupeKey } = request;
   const recipient = normalizeEmail(request.recipient.email);
+  const recipientKind = request.recipientKind ?? "to";
+  const toRecipients = snapshot(
+    request.toRecipients ?? (recipientKind === "to" ? [request.recipient] : []),
+  );
+  const ccRecipients = snapshot(
+    request.ccRecipients ?? (recipientKind === "cc" ? [request.recipient] : []),
+  );
 
   const verdict = guardRecipient(settings, recipient);
   if (!verdict.allowed) {
-    await logTerminal(db, job.id, recipient, dedupeKey, verdict.status, verdict.reason);
+    await logTerminal(db, job.id, recipient, dedupeKey, verdict.status, verdict.reason, recipientKind);
     return { result: "blocked", status: verdict.status, reason: verdict.reason };
   }
 
   const fromAddress = settings.from_address;
   if (!fromAddress || !settings.from_name) {
     const error = "settings.from_address / settings.from_name are not configured";
-    await logTerminal(db, job.id, recipient, dedupeKey, "failed", error);
+    await logTerminal(db, job.id, recipient, dedupeKey, "failed", error, recipientKind);
     return { result: "failed", error };
   }
 
   const messageId = newMessageId(fromAddress);
-  const sendLogId = await claim(db, job.id, recipient, dedupeKey, messageId);
+  const sendLogId = await claim(db, job.id, recipient, dedupeKey, messageId, recipientKind);
   if (sendLogId === null) return { result: "duplicate", dedupeKey };
 
   try {
     await db
       .prepare(
         `INSERT INTO outbox
-           (send_log_id, job_id, recipient, recipient_name, dedupe_key,
+           (send_log_id, job_id, recipient, recipient_name, recipient_kind,
+            to_recipients_json, cc_recipients_json, dedupe_key,
             subject, body_html, body_text, rfc_message_id, next_attempt_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${NOW_SQL}, ${NOW_SQL})`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${NOW_SQL}, ${NOW_SQL})`,
       )
       .bind(
         sendLogId,
         job.id,
         recipient,
         request.recipient.display_name,
+        recipientKind,
+        JSON.stringify(toRecipients),
+        JSON.stringify(ccRecipients),
         dedupeKey,
         request.subject,
         request.html,

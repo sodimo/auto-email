@@ -12,10 +12,11 @@
  */
 import { Email, SmtpError, WorkerMailer } from "../../vendor/worker-mailer/index.js";
 import { SMTP_AUTH_TYPES } from "../config.js";
-import type { Env, Settings } from "../types.js";
+import type { Env, MessageAddress, Settings } from "../types.js";
 
 export interface OutboundMessage {
-  to: { email: string; name?: string | null };
+  to: MessageAddress[];
+  cc?: MessageAddress[];
   from: { email: string; name: string };
   replyTo?: string | undefined;
   subject: string;
@@ -58,9 +59,12 @@ export function newMessageId(fromAddress: string): string {
  * that differs from the one delivered, down to the MIME boundary and Date.
  */
 export function buildMessage(message: OutboundMessage): Uint8Array {
+  const address = (recipient: MessageAddress): { email: string; name?: string } =>
+    recipient.name ? { name: recipient.name, email: recipient.email } : { email: recipient.email };
   return new Email({
     from: { name: message.from.name, email: message.from.email },
-    to: message.to.name ? { name: message.to.name, email: message.to.email } : message.to.email,
+    to: message.to.map(address),
+    ...(message.cc?.length ? { cc: message.cc.map(address) } : {}),
     ...(message.replyTo ? { reply: message.replyTo } : {}),
     subject: message.subject,
     text: message.text,
