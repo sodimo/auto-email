@@ -32,7 +32,8 @@ where it stopped.
 
 ## TEST MODE IS LAW
 
-Recipients are hard-pinned to `thomas@leger.run` and `tombionic@gmail.com`. The
+Recipients are hard-pinned to `thomas@leger.run` and
+`paul.ghafary@sodimo.eu`. The
 allowlist is **code** (`src/lib/guard.ts#TEST_MODE_ALLOWLIST`), and
 `config.ts#FORCE_TEST_MODE` keeps it in force regardless of the
 `settings.test_mode` row, so no database edit or UI action can put a real

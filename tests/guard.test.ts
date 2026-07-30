@@ -13,8 +13,8 @@ import type { Settings } from "../src/types.js";
 const live: Settings = { kill_switch: "off", test_mode: "on" };
 
 describe("test mode", () => {
-  it("pins sending to exactly the two Wave 1 addresses", () => {
-    expect(TEST_MODE_ALLOWLIST).toEqual(["thomas@leger.run", "tombionic@gmail.com"]);
+  it("pins sending to exactly the two handoff addresses", () => {
+    expect(TEST_MODE_ALLOWLIST).toEqual(["thomas@leger.run", "paul.ghafary@sodimo.eu"]);
   });
 
   it("lets a pinned recipient through", () => {
@@ -33,10 +33,10 @@ describe("test mode", () => {
 
   it("compares case- and whitespace-insensitively", () => {
     expect(guardRecipient(live, "  Thomas@Leger.RUN ")).toEqual({ allowed: true });
-    expect(isPinnedTestRecipient("TOMBIONIC@GMAIL.COM")).toBe(true);
+    expect(isPinnedTestRecipient("PAUL.GHAFARY@SODIMO.EU")).toBe(true);
   });
 
-  it("stays on in Wave 1 even if the settings row says otherwise", () => {
+  it("stays forced on even if the settings row says otherwise", () => {
     expect(FORCE_TEST_MODE).toBe(true);
     const off: Settings = { kill_switch: "off", test_mode: "off" };
     expect(isTestMode(off)).toBe(true);

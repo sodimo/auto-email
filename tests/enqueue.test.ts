@@ -76,7 +76,9 @@ describe("idempotency", () => {
   it("still queues under a different key, recipient or job", async () => {
     await queue();
     expect((await queue({ dedupeKey: "run:2026-07-30T06:00Z" })).result).toBe("queued");
-    expect((await queue({ recipient: { email: "tombionic@gmail.com", display_name: null } })).result).toBe("queued");
+    expect(
+      (await queue({ recipient: { email: "paul.ghafary@sodimo.eu", display_name: null } })).result,
+    ).toBe("queued");
     expect((await queue({ job: await insertJob({ name: "enqueue-test-2" }) })).result).toBe("queued");
     expect(await outbox()).toHaveLength(4);
   });

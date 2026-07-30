@@ -49,7 +49,7 @@ describe("GET /healthz", () => {
       outbox: { pending: 0, failed: 0, oldest: null },
       kill_switch: "off",
       test_mode: "on",
-      pinned_recipients: ["thomas@leger.run", "tombionic@gmail.com"],
+      pinned_recipients: ["thomas@leger.run", "paul.ghafary@sodimo.eu"],
       from: "rapports@sodimo.eu",
       ehlo: "sodimo.eu",
       // tests/setup.ts points the hosts at 127.0.0.1 so nothing can dial out.

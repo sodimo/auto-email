@@ -114,7 +114,7 @@ describe("admin state and job management", () => {
       kill_switch: "off",
       test_mode: "on",
       forced_test_mode: true,
-      pinned_recipients: ["thomas@leger.run", "tombionic@gmail.com"],
+      pinned_recipients: ["thomas@leger.run", "paul.ghafary@sodimo.eu"],
     });
     expect(snapshot.templates.some((template: any) => template.name === "echeances-retard")).toBe(true);
   });

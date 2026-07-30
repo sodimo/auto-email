@@ -54,7 +54,7 @@ beforeEach(async () => {
     // Back to exactly the two seeded, active members — a recipient added by one
     // test must not still be on the list for the next one.
     env.DB.prepare(
-      "DELETE FROM recipient_list_members WHERE email NOT IN ('thomas@leger.run', 'tombionic@gmail.com')",
+      "DELETE FROM recipient_list_members WHERE email NOT IN ('thomas@leger.run', 'paul.ghafary@sodimo.eu')",
     ),
     env.DB.prepare("UPDATE recipient_list_members SET active = 1"),
     env.DB.prepare("DELETE FROM recipient_lists WHERE name <> 'test'"),

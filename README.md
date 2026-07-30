@@ -6,7 +6,7 @@ folder over IMAP. See [SPEC.md](SPEC.md) for the contract and
 [CLAUDE.md](CLAUDE.md) if you are an agent picking this up.
 
 **Test mode is forced:** sends can reach only `thomas@leger.run` and
-`tombionic@gmail.com`. Every other recipient is refused in code, including
+`paul.ghafary@sodimo.eu`. Every other recipient is refused in code, including
 addresses entered in the admin UI.
 
 ## Develop
@@ -84,6 +84,9 @@ Open `https://auto-email.sodimo.eu/` (or the workers.dev URL before domain
 attachment). Browser authentication uses username `sodimo` and the
 `TRIGGER_TOKEN` value as password. The French UI manages sendings, schedules,
 templates, recipient lists, history and the kill switch.
+
+For the in-person business-owner walkthrough, use
+[`HANDOFF-PAUL.md`](HANDOFF-PAUL.md).
 
 Automation can use the same token without Basic auth:
 

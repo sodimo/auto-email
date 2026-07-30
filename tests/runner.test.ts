@@ -33,7 +33,10 @@ describe("enqueueDueJobs", () => {
 
     expect(summary.jobs.map((j) => j.job)).toEqual(["due"]);
     expect(summary.jobs[0]).toMatchObject({ attempted: 2, queued: 2, failed: 0 });
-    expect((await outbox()).map((r) => r.recipient).sort()).toEqual(["thomas@leger.run", "tombionic@gmail.com"]);
+    expect((await outbox()).map((r) => r.recipient).sort()).toEqual([
+      "paul.ghafary@sodimo.eu",
+      "thomas@leger.run",
+    ]);
   });
 
   it("touches no SMTP at all — sending is the drain's job", async () => {
@@ -221,7 +224,10 @@ describe("enqueue then drain, end to end", () => {
     const drained = await drainOutbox(env, { transport, openAppender: noAppender });
 
     expect(drained).toMatchObject({ scanned: 2, sent: 2 });
-    expect(transport.recipients.sort()).toEqual(["thomas@leger.run", "tombionic@gmail.com"]);
+    expect(transport.recipients.sort()).toEqual([
+      "paul.ghafary@sodimo.eu",
+      "thomas@leger.run",
+    ]);
     expect(transport.sent[0]!.raw).toContain("From: \"Rapports Sodimo\" <rapports@sodimo.eu>");
     expect((await sendLog()).every((r) => r.status === "sent")).toBe(true);
   });
@@ -236,9 +242,9 @@ describe("enqueue then drain, end to end", () => {
     const drained = await drainOutbox(env, { transport, openAppender: noAppender });
 
     expect(drained).toMatchObject({ scanned: 2, sent: 1, failed: 1 });
-    expect(transport.recipients).toEqual(["tombionic@gmail.com"]);
+    expect(transport.recipients).toEqual(["paul.ghafary@sodimo.eu"]);
     const log = await sendLog();
     expect(log.find((r) => r.recipient === "thomas@leger.run")!.status).toBe("failed");
-    expect(log.find((r) => r.recipient === "tombionic@gmail.com")!.status).toBe("sent");
+    expect(log.find((r) => r.recipient === "paul.ghafary@sodimo.eu")!.status).toBe("sent");
   });
 });

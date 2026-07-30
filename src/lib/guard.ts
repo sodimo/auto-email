@@ -9,8 +9,11 @@
 import { FORCE_TEST_MODE } from "../config.js";
 import type { Settings } from "../types.js";
 
-/** Wave 1 recipients. Code, not data — a D1 row must not be able to widen it. */
-export const TEST_MODE_ALLOWLIST: readonly string[] = ["thomas@leger.run", "tombionic@gmail.com"];
+/** Handoff recipients. Code, not data — a D1 row must not be able to widen it. */
+export const TEST_MODE_ALLOWLIST: readonly string[] = [
+  "thomas@leger.run",
+  "paul.ghafary@sodimo.eu",
+];
 
 export type GuardVerdict =
   | { allowed: true }
