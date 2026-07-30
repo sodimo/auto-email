@@ -149,11 +149,23 @@ jq -e \
 
 headers=$(mktemp)
 trap 'rm -f "$headers"' EXIT
-curl --silent --show-error --max-time 30 --output /dev/null --dump-header "$headers" "https://${DOMAIN}/"
-status=$(awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}' "$headers")
-location=$(awk 'BEGIN {IGNORECASE=1} /^location:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")
+status=""
+location=""
+for attempt in {1..10}; do
+  : >"$headers"
+  curl --silent --show-error --max-time 30 --output /dev/null --dump-header "$headers" "https://${DOMAIN}/"
+  status=$(awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}' "$headers")
+  location=$(awk 'BEGIN {IGNORECASE=1} /^location:/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")
+  if [[ "$status" =~ ^30[12378]$ ]] && [[ "$location" == https://sodimo.cloudflareaccess.com/* ]]; then
+    break
+  fi
+  if (( attempt < 10 )); then
+    echo "::notice::Propagation Access en cours (${attempt}/10): HTTP ${status}."
+    sleep 3
+  fi
+done
 if [[ ! "$status" =~ ^30[12378]$ ]] || [[ "$location" != https://sodimo.cloudflareaccess.com/* ]]; then
-  echo "::error::La porte Access n'est pas observable: HTTP ${status}, Location=${location:-absente}."
+  echo "::error::La porte Access n'est pas observable après propagation: HTTP ${status}, Location=${location:-absente}."
   exit 1
 fi
 
