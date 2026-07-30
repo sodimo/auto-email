@@ -23,7 +23,7 @@ beforeEach(async () => {
   job = await insertJob({ name: "drain-test" });
 });
 
-/** Queues `count` messages to the pinned address, one per dedupe key. */
+/** Queues `count` messages to the handoff address, one per dedupe key. */
 async function queueMessages(count: number): Promise<void> {
   const settings = await settingsOf();
   for (let i = 0; i < count; i++) {
@@ -31,7 +31,7 @@ async function queueMessages(count: number): Promise<void> {
       db: env.DB,
       settings,
       job,
-      recipient: { email: "thomas@leger.run", display_name: "Thomas" },
+      recipient: { email: "paul.ghafary@sodimo.eu", display_name: "Paul" },
       dedupeKey: `run:key-${i}`,
       subject: `Rapport ${i}`,
       html: `<p>Rapport ${i}</p>`,
@@ -51,7 +51,7 @@ describe("draining", () => {
     const summary = await drainOutbox(env, { transport, openAppender: noAppender });
 
     expect(summary).toMatchObject({ scanned: 2, sent: 2, failed: 0, retrying: 0 });
-    expect(transport.recipients).toEqual(["thomas@leger.run", "thomas@leger.run"]);
+    expect(transport.recipients).toEqual(["paul.ghafary@sodimo.eu", "paul.ghafary@sodimo.eu"]);
     expect((await outbox()).map((r) => r.status)).toEqual(["sent", "sent"]);
     expect((await sendLog()).map((r) => r.status)).toEqual(["sent", "sent"]);
     expect((await sendLog())[0]!.smtp_response).toContain("250");
@@ -197,6 +197,7 @@ describe("the guard runs again at drain time", () => {
     await queueMessages(1);
     // Simulates a row queued before the allowlist tightened.
     await env.DB.prepare("UPDATE outbox SET recipient = 'rani@sodimo.eu'").run();
+    await setSetting("test_mode", "on");
     const transport = new FakeTransport();
 
     const summary = await drainOutbox(env, { transport, openAppender: noAppender });

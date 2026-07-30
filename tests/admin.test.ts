@@ -5,7 +5,7 @@ import { cronToSchedule, scheduleLabel, scheduleToCron } from "../src/admin/sche
 import { friendlyBodyToHtml } from "../src/admin/template.js";
 
 const tokenAuth = { "x-trigger-token": "test-token" };
-const basicAuth = { authorization: "Basic c29kaW1vOnRlc3QtdG9rZW4=" }; // sodimo:test-token
+const accessAuth = { "cf-access-jwt-assertion": "test-access-jwt" };
 
 async function request(
   method: string,
@@ -27,6 +27,17 @@ async function state(): Promise<any> {
   const response = await request("GET", "/api/admin/state");
   expect(response.status).toBe(200);
   return await response.json();
+}
+
+async function accessRequest(method: string, path: string, body?: unknown): Promise<Response> {
+  return await SELF.fetch(`https://auto-email.sodimo.eu${path}`, {
+    method,
+    headers: {
+      ...accessAuth,
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
 }
 
 describe("human schedules", () => {
@@ -61,18 +72,20 @@ describe("friendly template conversion", () => {
 });
 
 describe("admin authentication and page", () => {
-  it("keeps the complete UI behind auth and accepts interim HTTP Basic", async () => {
+  it("keeps the complete UI behind Cloudflare Access without a native Basic prompt", async () => {
     const anonymous = await SELF.fetch("https://auto-email.test/");
     expect(anonymous.status).toBe(401);
-    expect(anonymous.headers.get("www-authenticate")).toContain("Basic");
+    expect(anonymous.headers.get("www-authenticate")).toBeNull();
     expect((await SELF.fetch("https://auto-email.test/api/admin/state")).status).toBe(401);
 
-    const wrongUser = await request("GET", "/", undefined, {
-      authorization: "Basic bm90LXNvZGltbzp0ZXN0LXRva2Vu", // not-sodimo:test-token
+    const legacyBasic = await request("GET", "/", undefined, {
+      authorization: "Basic c29kaW1vOnRlc3QtdG9rZW4=", // sodimo:test-token
     });
-    expect(wrongUser.status).toBe(401);
+    expect(legacyBasic.status).toBe(401);
 
-    const response = await request("GET", "/", undefined, basicAuth);
+    // Access identity is accepted only on the protected production hostname.
+    expect((await request("GET", "/", undefined, accessAuth)).status).toBe(401);
+    const response = await accessRequest("GET", "/");
     const html = await response.text();
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
@@ -80,9 +93,10 @@ describe("admin authentication and page", () => {
     expect(response.headers.get("content-security-policy")).toMatch(/script-src 'nonce-[^']+'/);
     expect(html).toContain("Envois automatiques");
     expect(html).toContain("Arrêt général");
-    expect(html).toContain("Mode test verrouillé");
+    expect(html).toContain("Cloudflare Access");
+    expect(html).toContain("Cette page fait foi");
     expect(html).not.toContain("0 6 * * *");
-    expect((await request("GET", "/api/admin/state", undefined, basicAuth)).status).toBe(200);
+    expect((await accessRequest("GET", "/api/admin/state")).status).toBe(200);
   });
 
   it("refuses cross-site mutations even with a valid credential", async () => {
@@ -112,9 +126,9 @@ describe("admin state and job management", () => {
     });
     expect(snapshot.safety).toMatchObject({
       kill_switch: "off",
-      test_mode: "on",
-      forced_test_mode: true,
-      pinned_recipients: ["thomas@leger.run", "paul.ghafary@sodimo.eu"],
+      test_mode: "off",
+      forced_test_mode: false,
+      pinned_recipients: [],
     });
     expect(snapshot.templates.some((template: any) => template.name === "echeances-retard")).toBe(true);
   });
@@ -122,7 +136,7 @@ describe("admin state and job management", () => {
   it("creates and updates a job from human schedule fields only", async () => {
     const snapshot = await state();
     const template = snapshot.templates.find((item: any) => item.name === "test-generic");
-    const list = snapshot.recipient_lists.find((item: any) => item.name === "test");
+    const list = snapshot.recipient_lists.find((item: any) => item.name === "suivi-clients");
     const created = await request("POST", "/api/admin/jobs", {
       display_name: "Rapport des jours ouvrés",
       kind: "digest",

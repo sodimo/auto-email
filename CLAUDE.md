@@ -27,11 +27,11 @@ create resources from here**. `bootstrap.yml` and `deploy.yml` do that in CI.
   way into the outbox; `src/lib/drain.ts#drainOutbox` is the only code in the
   repo that talks to SMTP. A second path around either defeats the idempotency
   ledger and the guard in one move. New sending features go *through* them.
-- **`src/lib/guard.ts` is the only place that decides who may be written to.**
-  `TEST_MODE_ALLOWLIST` is code, not data, and `config.ts#FORCE_TEST_MODE` keeps
-  it in force over the settings row. Do not widen either to
-  "make testing easier" — that is exactly what they exist to prevent. The guard
-  runs at enqueue AND at drain; keep it that way.
+- **`src/lib/guard.ts` is the only place that applies global safety gates.**
+  Active UI recipient-list rows govern normal sends. If `settings.test_mode` is
+  re-enabled, `TEST_MODE_ALLOWLIST` pins the emergency scope to Paul. Do not
+  widen it to "make testing easier". The guard runs at enqueue AND at drain;
+  keep it that way.
 - Both switches fail closed. Absent or unrecognised value ⇒ kill switch engaged,
   test mode on. Never "helpfully" default them permissive.
 - Claim first, then queue, then send, then settle. Never send before the
@@ -68,7 +68,7 @@ src/lib/db.ts         typed reads; src/lib/datasource.ts source routing + SQL gu
 src/lib/erp.ts        production-mirror completeness/freshness gate
 src/lib/job-presets.ts canonical sales-digest and overdue-payment ERP queries
 vendor/worker-mailer/ patched SMTP client (MIT, see its README)
-migrations/           0001 schema, 0002 seed, 0003 Wave 2, 0004 overdue mapping, 0005 Paul handoff
+migrations/           0001 schema through 0006 operational handoff
 ```
 
 ## Sharp edges
@@ -102,10 +102,11 @@ migrations/           0001 schema, 0002 seed, 0003 Wave 2, 0004 overdue mapping,
 - In the frozen ETL, `fact_echeances.numdoc` is `REGLE.NUMREG`; production data
   maps it to `fact_reglements.numreg`, not to a sales invoice number. The
   overdue preset keeps `fact_ventes.numdoc` only as a compatibility fallback.
-- Browser authentication is HTTP Basic username `sodimo`, password
-  `TRIGGER_TOKEN`; API callers can keep using the header or bearer token.
-  Cloudflare Access is the intended outer gate on `auto-email.sodimo.eu`, but
-  Basic auth stays fail-closed underneath it.
+- Browser authentication is the existing Sodimo Cloudflare Access gate on
+  `auto-email.sodimo.eu`; the Worker accepts its identity assertion only on
+  that hostname. API callers use the trigger header or bearer token on
+  workers.dev. Never add an HTTP Basic challenge: it causes the native browser
+  password dialog that Access is meant to replace.
 
 ## Live-sending caveats
 

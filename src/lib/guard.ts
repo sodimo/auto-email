@@ -9,11 +9,8 @@
 import { FORCE_TEST_MODE } from "../config.js";
 import type { Settings } from "../types.js";
 
-/** Handoff recipients. Code, not data — a D1 row must not be able to widen it. */
-export const TEST_MODE_ALLOWLIST: readonly string[] = [
-  "thomas@leger.run",
-  "paul.ghafary@sodimo.eu",
-];
+/** Emergency test recipient used only if settings.test_mode is re-enabled. */
+export const TEST_MODE_ALLOWLIST: readonly string[] = ["paul.ghafary@sodimo.eu"];
 
 export type GuardVerdict =
   | { allowed: true }

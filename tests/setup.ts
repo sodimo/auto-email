@@ -51,17 +51,18 @@ beforeEach(async () => {
     env.DB.prepare(
       "DELETE FROM templates WHERE name NOT IN ('rapport-quotidien', 'echeances-retard', 'test-generic')",
     ),
-    // Back to exactly the two seeded, active members — a recipient added by one
+    // Back to exactly the handoff recipient — a recipient added by one
     // test must not still be on the list for the next one.
     env.DB.prepare(
-      "DELETE FROM recipient_list_members WHERE email NOT IN ('thomas@leger.run', 'paul.ghafary@sodimo.eu')",
+      "DELETE FROM recipient_list_members WHERE lower(email) <> 'paul.ghafary@sodimo.eu'",
     ),
     env.DB.prepare("UPDATE recipient_list_members SET active = 1"),
-    env.DB.prepare("DELETE FROM recipient_lists WHERE name <> 'test'"),
+    env.DB.prepare("UPDATE recipient_lists SET name = 'suivi-clients' WHERE name = 'test'"),
+    env.DB.prepare("DELETE FROM recipient_lists WHERE name <> 'suivi-clients'"),
     // Every setting a test may touch goes back to its seeded value, or one
     // test's tuning silently becomes the next test's premise.
     env.DB.prepare("UPDATE settings SET value = 'off' WHERE key = 'kill_switch'"),
-    env.DB.prepare("UPDATE settings SET value = 'on' WHERE key = 'test_mode'"),
+    env.DB.prepare("UPDATE settings SET value = 'off' WHERE key = 'test_mode'"),
     env.DB.prepare("UPDATE settings SET value = 'on' WHERE key = 'imap_append'"),
     env.DB.prepare("UPDATE settings SET value = '10' WHERE key = 'drain_batch_size'"),
     env.DB.prepare("UPDATE settings SET value = '' WHERE key = 'sent_folder_override'"),

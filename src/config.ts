@@ -1,6 +1,5 @@
 /** Compile-time constants. Anything an admin should be able to change at
- *  runtime belongs in the `settings` table instead — except the test-mode
- *  allowlist, which is deliberately code (see lib/guard.ts). */
+ *  runtime belongs in the `settings` table. */
 import type { AuthType } from "../vendor/worker-mailer/index.js";
 
 /**
@@ -17,12 +16,12 @@ export const DASHBOARD_URL = "https://dashboard.sodimo.eu";
 export const MAX_CONDITION_ROWS = 500;
 
 /**
- * WAVE 1 LAW. While true, the guard pins recipients to TEST_MODE_ALLOWLIST no
- * matter what the `settings.test_mode` row says — so a stray D1 UPDATE cannot
- * put production addresses in play before there is an admin UI to do it
- * deliberately. Wave 2 flips this to false and hands control to the setting.
+ * Wave 1 forced this on while the UI was unfinished. The business-owner
+ * handoff explicitly graduates recipient control to the administration UI.
+ * Test mode remains available as a fail-closed setting, but is no longer
+ * compile-time forced.
  */
-export const FORCE_TEST_MODE = true;
+export const FORCE_TEST_MODE = false;
 
 /**
  * Stated explicitly because the vendored client has no working default: with

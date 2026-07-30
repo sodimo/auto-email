@@ -579,6 +579,7 @@ export async function loadAdminState(env: Env): Promise<unknown> {
     ]);
 
   const settings = Object.fromEntries(settingsResult.results.map((row) => [row.key, row.value]));
+  const testMode = FORCE_TEST_MODE || settings["test_mode"] !== "off";
   let erp: ErpReadiness;
   try {
     erp = await erpReadiness(env.ERP);
@@ -614,9 +615,9 @@ export async function loadAdminState(env: Env): Promise<unknown> {
     history: historyResult.results,
     safety: {
       kill_switch: settings["kill_switch"] === "off" ? "off" : "engaged",
-      test_mode: "on",
+      test_mode: testMode ? "on" : "off",
       forced_test_mode: FORCE_TEST_MODE,
-      pinned_recipients: TEST_MODE_ALLOWLIST,
+      pinned_recipients: testMode ? TEST_MODE_ALLOWLIST : [],
     },
     erp,
     template_variables: {

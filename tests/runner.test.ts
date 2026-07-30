@@ -32,11 +32,8 @@ describe("enqueueDueJobs", () => {
     const summary = await enqueueDueJobs(env, TICK);
 
     expect(summary.jobs.map((j) => j.job)).toEqual(["due"]);
-    expect(summary.jobs[0]).toMatchObject({ attempted: 2, queued: 2, failed: 0 });
-    expect((await outbox()).map((r) => r.recipient).sort()).toEqual([
-      "paul.ghafary@sodimo.eu",
-      "thomas@leger.run",
-    ]);
+    expect(summary.jobs[0]).toMatchObject({ attempted: 1, queued: 1, failed: 0 });
+    expect((await outbox()).map((r) => r.recipient)).toEqual(["paul.ghafary@sodimo.eu"]);
   });
 
   it("touches no SMTP at all — sending is the drain's job", async () => {
@@ -72,18 +69,18 @@ describe("enqueueDueJobs", () => {
     await enqueueDueJobs(env, TICK);
     await enqueueDueJobs(env, TICK + 5 * 60_000);
 
-    expect(await outbox()).toHaveLength(2); // two recipients, once each
+    expect(await outbox()).toHaveLength(1); // one recipient, once
   });
 
-  it("logs an unpinned list member as skipped without dropping the pinned ones", async () => {
+  it("queues a recipient added through the authoritative UI list", async () => {
     await addRecipient("rani@sodimo.eu", "Rani");
     await insertJob({ name: "due", schedule: "0 6 * * *" });
 
     const summary = await enqueueDueJobs(env, TICK);
 
-    expect(summary.jobs[0]).toMatchObject({ attempted: 3, queued: 2, skipped: 1 });
-    expect((await outbox()).map((r) => r.recipient)).not.toContain("rani@sodimo.eu");
-    expect((await sendLog()).find((r) => r.recipient === "rani@sodimo.eu")?.status).toBe("skipped_test_mode");
+    expect(summary.jobs[0]).toMatchObject({ attempted: 2, queued: 2, skipped: 0 });
+    expect((await outbox()).map((r) => r.recipient)).toContain("rani@sodimo.eu");
+    expect((await sendLog()).find((r) => r.recipient === "rani@sodimo.eu")?.status).toBe("pending");
   });
 });
 
@@ -93,7 +90,7 @@ describe("digest jobs", () => {
     await enqueueDueJobs(env, TICK);
 
     const queued = await outbox();
-    expect(queued).toHaveLength(2);
+    expect(queued).toHaveLength(1);
     expect(queued[0]!.subject).toBe("Rapport quotidien Sodimo — mercredi 29 juillet 2026");
     expect(await firstQueuedBody()).toContain("Aucune donnée à signaler");
   });
@@ -112,8 +109,8 @@ describe("digest jobs", () => {
 
     const summary = await enqueueDueJobs(env, TICK);
 
-    expect(summary.jobs[0]).toMatchObject({ rowCount: 2, queued: 2 });
-    expect(await outbox()).toHaveLength(2); // one message per recipient, not per row
+    expect(summary.jobs[0]).toMatchObject({ rowCount: 2, queued: 1 });
+    expect(await outbox()).toHaveLength(1); // one digest per recipient, not per row
     const body = await firstQueuedBody();
     expect(body).toContain("F-1001");
     expect(body).toContain("F-1002");
@@ -151,9 +148,9 @@ describe("condition jobs", () => {
 
     const summary = await enqueueDueJobs(env, TICK);
 
-    expect(summary.jobs[0]).toMatchObject({ rowCount: 2, attempted: 4, queued: 4 });
+    expect(summary.jobs[0]).toMatchObject({ rowCount: 2, attempted: 2, queued: 2 });
     expect(summary.jobs[0]!.dedupeKeys).toEqual(["row:F-3001", "row:F-3002"]);
-    expect(await outbox()).toHaveLength(4); // 2 rows x 2 recipients
+    expect(await outbox()).toHaveLength(2); // 2 rows x 1 recipient
     const body = await firstQueuedBody();
     expect(body).toContain("F-3001");
     expect(body).not.toContain("F-3002");
@@ -164,13 +161,13 @@ describe("condition jobs", () => {
     await insertJob(overdue);
 
     await enqueueDueJobs(env, TICK);
-    expect(await outbox()).toHaveLength(2);
+    expect(await outbox()).toHaveLength(1);
 
     await seedInvoices([["F-4002", "Bordeaux Co", 200, 40]]);
     const summary = await enqueueDueJobs(env, TICK + 24 * 3600_000);
 
-    expect(summary.jobs[0]).toMatchObject({ rowCount: 2, queued: 2, duplicates: 2 });
-    expect(await outbox()).toHaveLength(4);
+    expect(summary.jobs[0]).toMatchObject({ rowCount: 2, queued: 1, duplicates: 1 });
+    expect(await outbox()).toHaveLength(2);
   });
 
   it("refuses condition_sql that is not a single read-only statement", async () => {
@@ -195,15 +192,15 @@ describe("manual triggers", () => {
     await enqueueDueJobs(env, TICK);
     const manual = await runJobById(env, "nightly");
 
-    expect(manual.result).toMatchObject({ queued: 2, duplicates: 0 });
+    expect(manual.result).toMatchObject({ queued: 1, duplicates: 0 });
     expect(manual.result!.dedupeKeys[0]).toMatch(/^manual:/);
-    expect(await outbox()).toHaveLength(4);
+    expect(await outbox()).toHaveLength(2);
   });
 
   it("run a disabled job — that is what the button is for", async () => {
     await insertJob({ name: "off", schedule: "0 6 * * *", enabled: 0 });
     const manual = await runJobById(env, "off");
-    expect(manual.result).toMatchObject({ queued: 2 });
+    expect(manual.result).toMatchObject({ queued: 1 });
   });
 
   it("obey the kill switch", async () => {
@@ -216,35 +213,33 @@ describe("manual triggers", () => {
 });
 
 describe("enqueue then drain, end to end", () => {
-  it("delivers the nightly digest to both pinned addresses", async () => {
+  it("delivers the nightly digest to the active handoff recipient", async () => {
     await insertJob({ name: "nightly", schedule: "0 6 * * *", dedupe_strategy: "per_day" });
     const transport = new FakeTransport();
 
     await enqueueDueJobs(env, TICK);
     const drained = await drainOutbox(env, { transport, openAppender: noAppender });
 
-    expect(drained).toMatchObject({ scanned: 2, sent: 2 });
-    expect(transport.recipients.sort()).toEqual([
-      "paul.ghafary@sodimo.eu",
-      "thomas@leger.run",
-    ]);
+    expect(drained).toMatchObject({ scanned: 1, sent: 1 });
+    expect(transport.recipients).toEqual(["paul.ghafary@sodimo.eu"]);
     expect(transport.sent[0]!.raw).toContain("From: \"Rapports Sodimo\" <rapports@sodimo.eu>");
     expect((await sendLog()).every((r) => r.status === "sent")).toBe(true);
   });
 
   it("does not let one bad recipient cost the rest of the batch", async () => {
+    await addRecipient("rani@sodimo.eu", "Rani");
     await insertJob({ name: "nightly", schedule: "0 6 * * *" });
     const transport = new FakeTransport((to) =>
-      to === "thomas@leger.run" ? new SmtpError("rcpt", "550 unknown", "550 5.1.1 unknown\r\n") : undefined,
+      to === "paul.ghafary@sodimo.eu" ? new SmtpError("rcpt", "550 unknown", "550 5.1.1 unknown\r\n") : undefined,
     );
 
     await enqueueDueJobs(env, TICK);
     const drained = await drainOutbox(env, { transport, openAppender: noAppender });
 
     expect(drained).toMatchObject({ scanned: 2, sent: 1, failed: 1 });
-    expect(transport.recipients).toEqual(["paul.ghafary@sodimo.eu"]);
+    expect(transport.recipients).toEqual(["rani@sodimo.eu"]);
     const log = await sendLog();
-    expect(log.find((r) => r.recipient === "thomas@leger.run")!.status).toBe("failed");
-    expect(log.find((r) => r.recipient === "paul.ghafary@sodimo.eu")!.status).toBe("sent");
+    expect(log.find((r) => r.recipient === "paul.ghafary@sodimo.eu")!.status).toBe("failed");
+    expect(log.find((r) => r.recipient === "rani@sodimo.eu")!.status).toBe("sent");
   });
 });

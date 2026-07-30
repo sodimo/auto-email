@@ -10,38 +10,38 @@ import {
 } from "../src/lib/guard.js";
 import type { Settings } from "../src/types.js";
 
-const live: Settings = { kill_switch: "off", test_mode: "on" };
+const testing: Settings = { kill_switch: "off", test_mode: "on" };
 
 describe("test mode", () => {
-  it("pins sending to exactly the two handoff addresses", () => {
-    expect(TEST_MODE_ALLOWLIST).toEqual(["thomas@leger.run", "paul.ghafary@sodimo.eu"]);
+  it("pins emergency test mode to Paul", () => {
+    expect(TEST_MODE_ALLOWLIST).toEqual(["paul.ghafary@sodimo.eu"]);
   });
 
   it("lets a pinned recipient through", () => {
     for (const email of TEST_MODE_ALLOWLIST) {
-      expect(guardRecipient(live, email)).toEqual({ allowed: true });
+      expect(guardRecipient(testing, email)).toEqual({ allowed: true });
     }
   });
 
   it("blocks every other recipient with skipped_test_mode", () => {
     for (const email of ["rani@sodimo.eu", "compta@sodimo.eu", "thomas@leger.run.evil.com", ""]) {
-      const verdict = guardRecipient(live, email);
+      const verdict = guardRecipient(testing, email);
       expect(verdict.allowed, email).toBe(false);
       if (!verdict.allowed) expect(verdict.status).toBe("skipped_test_mode");
     }
   });
 
   it("compares case- and whitespace-insensitively", () => {
-    expect(guardRecipient(live, "  Thomas@Leger.RUN ")).toEqual({ allowed: true });
-    expect(isPinnedTestRecipient("PAUL.GHAFARY@SODIMO.EU")).toBe(true);
+    expect(guardRecipient(testing, "  PAUL.GHAFARY@SODIMO.EU ")).toEqual({ allowed: true });
+    expect(isPinnedTestRecipient("Paul.Ghafary@Sodimo.Eu")).toBe(true);
   });
 
-  it("stays forced on even if the settings row says otherwise", () => {
-    expect(FORCE_TEST_MODE).toBe(true);
+  it("lets the UI recipient lists become authoritative when the setting is off", () => {
+    expect(FORCE_TEST_MODE).toBe(false);
     const off: Settings = { kill_switch: "off", test_mode: "off" };
-    expect(isTestMode(off)).toBe(true);
+    expect(isTestMode(off)).toBe(false);
     const verdict = guardRecipient(off, "rani@sodimo.eu");
-    expect(verdict.allowed).toBe(false);
+    expect(verdict).toEqual({ allowed: true });
   });
 
   it("fails closed when the setting is missing or unrecognised", () => {

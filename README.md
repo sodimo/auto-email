@@ -5,9 +5,10 @@ Cloudflare Worker via Strato SMTP, with a copy filed in the mailbox's Sent
 folder over IMAP. See [SPEC.md](SPEC.md) for the contract and
 [CLAUDE.md](CLAUDE.md) if you are an agent picking this up.
 
-**Test mode is forced:** sends can reach only `thomas@leger.run` and
-`paul.ghafary@sodimo.eu`. Every other recipient is refused in code, including
-addresses entered in the admin UI.
+Recipient lists in the administration UI are authoritative. The production
+handoff starts with only `paul.ghafary@sodimo.eu`, both jobs paused and the
+global stop engaged. An emergency test-mode setting can still pin sends to Paul
+alone, but it is not forced during normal operation.
 
 ## Develop
 
@@ -68,27 +69,28 @@ purpose. The workflows use the org-level `CLOUDFLARE_API_TOKEN` /
    Push-to-main auto-deploy stays off until you opt in with
    `gh variable set DEPLOY_ENABLED --body true`.
 
-4. **Attach the custom domain** (one-time, idempotent):
+4. **Attach the custom domain and existing Sodimo Access gate** (one-time,
+   idempotent):
 
    ```sh
    gh workflow run attach-domain.yml -R sodimo/auto-email
    ```
 
-   Then create the Cloudflare Access application manually as described in
-   [OPERATIONS.md](OPERATIONS.md). Do not use locally authenticated wrangler for
-   any account operation; that login is not Sodimo's.
+   The workflow attaches the existing `sodimo-staff` Access group; it does not
+   create a new identity group or alter membership. Do not use locally
+   authenticated wrangler for any account operation; that login is not
+   Sodimo's.
 
 ## Operate
 
-Open `https://auto-email.sodimo.eu/` (or the workers.dev URL before domain
-attachment). Browser authentication uses username `sodimo` and the
-`TRIGGER_TOKEN` value as password. The French UI manages sendings, schedules,
-templates, recipient lists, history and the kill switch.
+Open `https://auto-email.sodimo.eu/` and pass the usual Sodimo Cloudflare Access
+login. There is no HTTP Basic browser prompt. The French UI manages sendings,
+schedules, templates, recipient lists, history and the kill switch.
 
 For the in-person business-owner walkthrough, use
 [`HANDOFF-PAUL.md`](HANDOFF-PAUL.md).
 
-Automation can use the same token without Basic auth:
+Automation uses the trigger token on the workers.dev hostname:
 
 ```sh
 TOKEN=...                       # the TRIGGER_TOKEN value
@@ -114,7 +116,9 @@ both every five minutes.
 means engaged, and it **holds** the queue rather than discarding it — turning it
 back off resumes where it stopped. Use the prominent switch in **Sécurité**;
 do not operate production D1 through a laptop's personal wrangler login.
-Turning `test_mode` off in D1 does nothing while the code-level guard is forced.
+`test_mode` is an emergency restriction: while on, only Paul can receive mail;
+while off, the active members of each UI list are authoritative. A missing or
+unrecognised value still fails closed as test mode on.
 
 Other knobs worth knowing: `drain_batch_size` (default 10, capped at 25),
 `imap_append` (`on`/`off` for Sent copies), `sent_folder_override` (empty =

@@ -5,9 +5,8 @@
 # Run after the Worker exists:
 #   gh workflow run attach-domain.yml -R sodimo/auto-email
 #
-# Cloudflare Access is a separate operator step. Do not create or mutate Zero
-# Trust policy here; the application must allow the reusable "Équipe Sodimo"
-# Access group.
+# The final step attaches the hostname to the reusable sodimo-staff Access
+# group already used by Sodimo. It does not create or alter group membership.
 name: attach custom domain
 
 on:
@@ -27,6 +26,8 @@ jobs:
             echo "::error::The inherited Cloudflare account credentials are missing."
             exit 1
           fi
+
+      - uses: actions/checkout@v4
 
       - name: Attach auto-email.sodimo.eu to the Worker
         run: |
@@ -62,3 +63,6 @@ jobs:
             exit 1
           fi
           echo "::notice::Verified ${MATCH}."
+
+      - name: Attach the existing Sodimo Access gate
+        run: bash scripts/attach-access.sh

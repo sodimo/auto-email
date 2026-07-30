@@ -2,14 +2,11 @@
 
 ## Access the administration
 
-The Worker has no anonymous surface. Before Cloudflare Access is installed,
-open `https://auto-email.sodimo.workers.dev/` and use:
-
-- username: `sodimo`
-- password: the current `TRIGGER_TOKEN` secret
-
-The same Basic authentication remains underneath Cloudflare Access. Never put
-the token in a URL, screenshot, issue, command output or browser bookmark.
+Open `https://auto-email.sodimo.eu/` and use the existing Sodimo Cloudflare
+Access login. Paul signs in as `paul.ghafary@sodimo.eu` and receives a one-time
+code through the configured Access login method. There is no second HTTP Basic
+prompt. The workers.dev hostname is for machine calls with `TRIGGER_TOKEN`;
+never put that token in a URL, screenshot, issue or browser bookmark.
 
 Useful paths for a Claude-guided session:
 
@@ -32,10 +29,10 @@ the repository variable `DEPLOY_ENABLED` is deliberately enabled. Never use
 the laptop's authenticated wrangler for deploys, D1 writes or Cloudflare
 account operations: it is connected to a personal account.
 
-## Attach `auto-email.sodimo.eu`
+## Attach `auto-email.sodimo.eu` and Access
 
-The account-level Workers Custom Domain API call is automated separately so a
-domain-permission failure cannot break routine deploys:
+The account-level Workers Custom Domain and Access attachment are automated
+separately so an account-permission failure cannot break routine deploys:
 
 ```sh
 gh workflow run attach-domain.yml -R sodimo/auto-email
@@ -48,32 +45,21 @@ PUT /accounts/<account id>/workers/domains
 hostname=auto-email.sodimo.eu, service=auto-email, zone_name=sodimo.eu
 ```
 
-The current Cloudflare API accepts the zone name, so the workflow does not need
-Zone Read permission or a copied zone identifier.
-
-## Put Cloudflare Access in front
-
-Zero Trust configuration is deliberately an operator step:
-
-1. In the Sodimo Cloudflare account, open **Zero Trust → Access →
-   Applications**.
-2. Add a **Self-hosted** application for `auto-email.sodimo.eu`.
-3. Add an **Allow** policy whose Include rule is the existing Access group
-   **Équipe Sodimo**.
-4. Verify that a member can pass Access and then the Worker's Basic prompt, and
-   that a non-member is stopped by Access.
-5. Keep the workers.dev route and forced test mode until this check is complete.
-
-Do not create a broad email-domain allow rule as a substitute for the group.
+The final workflow step attaches the existing `sodimo-staff` group and keeps
+Thomas's existing administrator identity as an Access-only exception. It does
+not create or edit the reusable group. Success requires an anonymous request to
+redirect to `sodimo.cloudflareaccess.com`; no manual Zero Trust change is
+normally required.
 
 ## Release a sending safely
 
-1. Confirm `/healthz` is healthy, the kill switch is off, and test mode is on.
-2. Keep a new job paused and use **Tester maintenant** once.
+1. In **Destinataires**, confirm every active address intended for the test.
+2. Keep a new job paused, release the global stop briefly, and use **Tester**
+   once.
 3. In **Historique**, check one `Envoyé` and one `Copie classée` result for each
-   pinned recipient. Read any SMTP or IMAP failure details before retrying.
-4. Enable the job only after its subject, content, recipients and schedule are
-   correct.
+   active recipient. Read any SMTP or IMAP failure details before retrying.
+4. Re-engage the global stop during the handoff. Enable a job only after its
+   subject, content, recipients and schedule are correct.
 
 The built-in sales report runs daily at 06:00 UTC. The overdue-payment estimate
 runs Mondays at 07:00 UTC. ERP jobs refuse to run while the nightly mirror is

@@ -20,35 +20,37 @@ web interface.
 
 - The global stop is engaged.
 - Both scheduled jobs are paused.
-- Forced test mode permits only Paul and Thomas as recipients.
+- The **Suivi clients** list contains only Paul as an active recipient.
+- Normal recipient control belongs to this web interface; emergency test mode
+  is off.
 - The outbox is empty and the ERP readiness gate is healthy.
 
 This means Paul can inspect everything without an automatic email going out.
-Changing a recipient in the UI cannot bypass the forced test allowlist.
+When the stop is released, every active address in a job's selected list is a
+real recipient, so the list must be reviewed before pressing **Tester**.
 
 ## Access
 
-Open `https://auto-email.sodimo.eu/`. The underlying browser prompt uses:
-
-- username: `sodimo`
-- password: the current `TRIGGER_TOKEN`, transferred separately through a
-  private credential channel; never place it in an email, screenshot or URL.
-
-Cloudflare Access with the shared **Équipe Sodimo** group is still required as
-the outer login gate. Until it is installed, the underlying prompt is the only
-login layer.
+Open `https://auto-email.sodimo.eu/`. Cloudflare Access shows the same Sodimo
+login used by the other internal websites. Paul enters
+`paul.ghafary@sodimo.eu`, requests the one-time code and enters it. The
+administration interface then opens directly—there is no Chrome/native
+username-and-password prompt and no trigger token to hand over.
 
 ## Paul's first controlled run
 
-1. Open **Sécurité** and confirm **Arrêt général** is active and test mode is
-   locked.
-2. Review **Destinataires**, **Modèles** and the two jobs under **Envois**.
-3. Compare the overdue estimate with known Sodiwin balances before relying on
+1. Open **Sécurité** and confirm **Arrêt général** is active.
+2. Open **Destinataires → Suivi clients** and confirm Paul is the only active
+   address. Show how to add, pause, edit and remove an address.
+3. Review **Modèles** and the two jobs under **Envois**. Show that **Modifier**
+   chooses the schedule, model and recipient list, while **Activer** controls
+   scheduled runs.
+4. Compare the overdue estimate with known Sodiwin balances before relying on
    it operationally.
-4. For one controlled test, release the global stop, use **Tester maintenant**
+5. For one controlled test, release the global stop, use **Tester**
    on the overdue job, then immediately restore the global stop.
-5. In **Historique**, confirm one delivered message and one classified Sent
-   copy for both Paul and Thomas. Confirm receipt in Paul's mailbox.
+6. In **Historique**, confirm one delivered message and one classified Sent
+   copy for Paul. Confirm receipt in Paul's mailbox.
 
 Do not enable either schedule during this first run.
 
@@ -65,11 +67,8 @@ recipient/contact rules and message review.
 
 1. Paul validates a sample of overdue balances against Sodiwin.
 2. Paul confirms who should receive the daily digest and weekly overdue review.
-3. Thomas installs the Cloudflare Access application using the **Équipe
-   Sodimo** group.
-4. A reviewed code change replaces forced test mode with the agreed internal
-   recipient policy.
-5. Only then: release the global stop and enable the approved jobs.
+3. Paul confirms the two schedules and which job may be activated.
+4. Only then: release the global stop and enable the approved jobs.
 
 Technical source: `https://github.com/sodimo/auto-email`. Deployments and D1
 migrations run only through GitHub Actions; no Cloudflare account operation is

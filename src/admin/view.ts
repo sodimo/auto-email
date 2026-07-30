@@ -1,7 +1,7 @@
 /**
- * Dependency-free French admin UI. The Worker serves this only after its
- * interim HTTP Basic/token gate; Cloudflare Access will add the named-user
- * edge gate on the custom domain later.
+ * Dependency-free French admin UI. Cloudflare Access protects the custom
+ * domain before the request reaches the Worker; machine endpoints may also
+ * use the trigger token on workers.dev.
  */
 
 export function adminPage(nonce: string): string {
@@ -385,7 +385,7 @@ export function adminPage(nonce: string): string {
         <div class="head-status">
           <span id="erp-head">ERP : vérification…</span>
           <span>·</span>
-          <span>Mode test</span>
+          <span id="recipient-mode-head">Destinataires : vérification…</span>
         </div>
       </header>
       <div class="content">
@@ -434,7 +434,7 @@ export function adminPage(nonce: string): string {
             </div>
             <button id="new-list" class="primary" type="button">Nouvelle liste</button>
           </div>
-          <div class="notice">Le mode test est verrouillé : seules les deux adresses autorisées peuvent actuellement recevoir des messages, même si d’autres adresses sont préparées ici.</div>
+          <div class="notice" id="recipient-notice">Chargement du contrôle des destinataires…</div>
           <div class="panel split">
             <div class="list-rail" id="recipient-lists"></div>
             <div class="list-detail" id="recipient-detail"></div>
@@ -482,8 +482,8 @@ export function adminPage(nonce: string): string {
               <button id="safety-kill-button" class="danger-solid" type="button" disabled>Arrêter tous les envois</button>
             </div>
             <div class="safety-card">
-              <h3>Mode test verrouillé</h3>
-              <p>Aucune modification de la base ne peut élargir les destinataires pendant cette phase.</p>
+              <h3 id="recipient-control-title">Contrôle des destinataires</h3>
+              <p id="recipient-control-copy">Chargement de l’état…</p>
               <div id="pinned-list"></div>
             </div>
             <div class="safety-card">
@@ -493,8 +493,9 @@ export function adminPage(nonce: string): string {
             </div>
             <div class="safety-card">
               <h3>Accès à cette page</h3>
-              <p>Authentification temporaire HTTP Basic. Cloudflare Access ajoutera ensuite l’identité nominative sur auto-email.sodimo.eu.</p>
+              <p>Cloudflare Access applique la connexion Sodimo habituelle avant d’ouvrir cette interface.</p>
               <dl class="definition">
+                <dt>Politique</dt><dd>Groupe Sodimo existant</dd>
                 <dt>Surface anonyme</dt><dd>Aucune</dd>
                 <dt>Cache navigateur</dt><dd>Désactivé</dd>
                 <dt>Écriture intersite</dt><dd>Refusée</dd>
@@ -695,7 +696,9 @@ export function adminPage(nonce: string): string {
     "test-generic": "Modèle de test"
   })[name] || String(name || "").replace(/[-_]+/g, " ").replace(/^./, (letter) => letter.toUpperCase());
   const friendlyListName = (name) => name === "test"
-    ? "Destinataires de test"
+    ? "Suivi clients"
+    : name === "suivi-clients"
+    ? "Suivi clients"
     : String(name || "").replace(/[-_]+/g, " ").replace(/^./, (letter) => letter.toUpperCase());
   let state = null;
   let selectedListId = null;
@@ -721,8 +724,17 @@ export function adminPage(nonce: string): string {
   }
 
   function testNotice() {
-    const addresses = state.safety.pinned_recipients.map((email) => "<strong>" + esc(email) + "</strong>").join(" et ");
-    $("#test-notice").innerHTML = "<strong>Mode test actif.</strong> Les essais et les envois programmés sont limités à " + addresses + ".";
+    const testing = state.safety.test_mode === "on";
+    if (testing) {
+      const addresses = state.safety.pinned_recipients.map((email) => "<strong>" + esc(email) + "</strong>").join(" et ");
+      $("#test-notice").innerHTML = "<strong>Mode test actif.</strong> Les essais et les envois programmés sont limités à " + addresses + ".";
+      $("#recipient-notice").innerHTML = "<strong>Mode test actif.</strong> Les autres adresses restent enregistrées, mais ne reçoivent aucun message.";
+      $("#recipient-mode-head").textContent = "Mode test";
+      return;
+    }
+    $("#test-notice").innerHTML = "<strong>Listes actives.</strong> Un test ou un envoi programmé part vers chaque adresse active de la liste choisie. Vérifiez la liste avant de lancer un test.";
+    $("#recipient-notice").innerHTML = "<strong>Cette page fait foi.</strong> Une adresse active reçoit les messages de cette liste ; mettez-la en pause ou retirez-la pour interrompre ses envois.";
+    $("#recipient-mode-head").textContent = "Destinataires gérés ici";
   }
 
   function renderJobs() {
@@ -827,6 +839,7 @@ export function adminPage(nonce: string): string {
 
   function renderSafety() {
     const engaged = state.safety.kill_switch === "engaged";
+    const testing = state.safety.test_mode === "on";
     $("#kill-banner").hidden = !engaged;
     $("#side-kill-title").textContent = engaged ? "Envois arrêtés" : "Envois autorisés";
     $("#side-kill-copy").textContent = engaged ? "La file reste en attente" : "L’arrêt général est désengagé";
@@ -839,9 +852,15 @@ export function adminPage(nonce: string): string {
     $("#safety-kill-button").textContent = engaged ? "Autoriser de nouveau les envois" : "Arrêter tous les envois";
     $("#safety-kill-button").className = engaged ? "primary" : "danger-solid";
     $("#safety-kill-button").disabled = false;
-    $("#pinned-list").innerHTML = state.safety.pinned_recipients.map((email) =>
-      '<div class="cell-title" style="margin-top:6px">' + esc(email) + "</div>"
-    ).join("");
+    $("#recipient-control-title").textContent = testing ? "Mode test actif" : "Listes de destinataires";
+    $("#recipient-control-copy").textContent = testing
+      ? "Seules les adresses d’essai ci-dessous peuvent recevoir un message."
+      : "Le mode test est désactivé. Les adresses actives configurées dans l’onglet Destinataires font foi.";
+    $("#pinned-list").innerHTML = testing
+      ? state.safety.pinned_recipients.map((email) =>
+          '<div class="cell-title" style="margin-top:6px">' + esc(email) + "</div>"
+        ).join("")
+      : '<div class="cell-sub" style="margin-top:8px">Modifiez ou mettez en pause une adresse depuis l’onglet Destinataires.</div>';
 
     $("#erp-head").textContent = state.erp.ready ? "ERP : prêt" : "ERP : en attente";
     $("#erp-copy").textContent = state.erp.ready
@@ -1014,7 +1033,7 @@ export function adminPage(nonce: string): string {
       }
       if (button.dataset.jobTest) {
         const job = state.jobs.find((item) => String(item.id) === button.dataset.jobTest);
-        if (!confirm("Envoyer maintenant un test de « " + (job.display_name || job.name) + " » aux deux adresses autorisées ?")) return;
+        if (!confirm("Envoyer maintenant un test de « " + (job.display_name || job.name) + " » aux destinataires actifs de sa liste ?")) return;
         button.disabled = true;
         const result = await api("POST", "/api/admin/jobs/" + job.id + "/trigger");
         const sent = result.drained && result.drained.sent || 0;

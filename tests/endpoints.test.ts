@@ -48,8 +48,8 @@ describe("GET /healthz", () => {
       enabled_jobs: 0,
       outbox: { pending: 0, failed: 0, oldest: null },
       kill_switch: "off",
-      test_mode: "on",
-      pinned_recipients: ["thomas@leger.run", "paul.ghafary@sodimo.eu"],
+      test_mode: "off",
+      pinned_recipients: null,
       from: "rapports@sodimo.eu",
       ehlo: "sodimo.eu",
       // tests/setup.ts points the hosts at 127.0.0.1 so nothing can dial out.
@@ -66,7 +66,7 @@ describe("GET /healthz", () => {
 
     const response = await SELF.fetch("https://auto-email.test/healthz", { headers: auth() });
     const body = (await response.json()) as { outbox: { pending: number; oldest: string | null } };
-    expect(body.outbox.pending).toBe(2);
+    expect(body.outbox.pending).toBe(1);
     expect(body.outbox.oldest).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 

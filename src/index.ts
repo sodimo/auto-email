@@ -1,5 +1,5 @@
 /**
- * Worker entry. Human and automation surfaces share the same fail-closed auth:
+ * Worker entry. Human and automation surfaces are both fail-closed:
  *   GET  /                    French admin UI
  *   /api/admin/*              admin CRUD + manual tests
  *   scheduled()             the cron tick: enqueue what is due, then drain a batch
@@ -7,9 +7,9 @@
  *   POST /drain             drain the outbox without enqueueing anything
  *   GET  /healthz           D1, settings, secrets, switch states, queue backlog
  *
- * Every endpoint requires the TRIGGER_TOKEN shared secret. There is no
- * anonymous surface at all: an unauthenticated request cannot even distinguish
- * a missing route from a wrong token.
+ * Browser traffic on auto-email.sodimo.eu is authenticated by Cloudflare
+ * Access. Machine traffic on workers.dev requires TRIGGER_TOKEN. There is no
+ * anonymous surface at either hostname.
  */
 import { handleAdminApi } from "./admin/routes.js";
 import { adminPage } from "./admin/view.js";
@@ -61,27 +61,26 @@ function presentedToken(request: Request): string {
   if (header) return header;
   const auth = request.headers.get("authorization") ?? "";
   if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7);
-  if (auth.toLowerCase().startsWith("basic ")) {
-    try {
-      const decoded = atob(auth.slice(6));
-      const separator = decoded.indexOf(":");
-      if (separator < 0 || decoded.slice(0, separator).toLowerCase() !== "sodimo") return "";
-      return decoded.slice(separator + 1);
-    } catch {
-      return "";
-    }
-  }
   return "";
 }
 
+function hasCloudflareAccessIdentity(request: Request): boolean {
+  const url = new URL(request.url);
+  return (
+    url.hostname === "auto-email.sodimo.eu" &&
+    Boolean(request.headers.get("cf-access-jwt-assertion"))
+  );
+}
+
 async function authorize(request: Request, env: Env): Promise<Response | null> {
+  // Access runs before the Worker on the custom domain and injects this header
+  // only after its policy succeeds. Never accept it on workers.dev.
+  if (hasCloudflareAccessIdentity(request)) return null;
   if (!env.TRIGGER_TOKEN) return json({ error: "TRIGGER_TOKEN secret is not set" }, 503);
   if (!(await secretsMatch(presentedToken(request), env.TRIGGER_TOKEN))) {
-    return json(
-      { error: "unauthorized" },
-      401,
-      { "www-authenticate": 'Basic realm="Sodimo - Envois automatiques", charset="UTF-8"' },
-    );
+    // Deliberately no WWW-Authenticate: Basic header. Browsers must never show
+    // a native password dialog; humans enter through Cloudflare Access.
+    return json({ error: "unauthorized" }, 401);
   }
   return null;
 }

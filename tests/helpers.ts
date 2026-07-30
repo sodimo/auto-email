@@ -70,7 +70,7 @@ export async function setSetting(key: string, value: string): Promise<void> {
 }
 
 export async function testListId(): Promise<number> {
-  const row = await env.DB.prepare("SELECT id FROM recipient_lists WHERE name = 'test'").first<{ id: number }>();
+  const row = await env.DB.prepare("SELECT id FROM recipient_lists WHERE name = 'suivi-clients'").first<{ id: number }>();
   return row!.id;
 }
 

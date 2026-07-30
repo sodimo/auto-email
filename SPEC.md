@@ -8,9 +8,9 @@ Strato SMTP + IMAP. **Free plan.** The audience is non-technical and French —
 every email body is French; the code and these docs are English.
 
 Wave 2 is implemented. The same Worker serves the French admin UI and sending
-engine. `auto-email.sodimo.eu` is attached by a manual CI workflow and will sit
-behind Cloudflare Access; until that policy is installed, every route is
-protected by the Worker's fail-closed shared-secret authentication.
+engine. `auto-email.sodimo.eu` sits behind the same Cloudflare Access login as
+the other Sodimo internal tools. The workers.dev hostname remains a
+shared-secret machine surface and never accepts a browser Access assertion.
 
 ## The two hard rules
 
@@ -30,18 +30,20 @@ exactly `off` — including a missing row — means engaged. An engaged switch
 *holds* the queue rather than cancelling it; turning it off resumes exactly
 where it stopped.
 
-## TEST MODE IS LAW
+## Recipient control and emergency test mode
 
-Recipients are hard-pinned to `thomas@leger.run` and
-`paul.ghafary@sodimo.eu`. The
-allowlist is **code** (`src/lib/guard.ts#TEST_MODE_ALLOWLIST`), and
-`config.ts#FORCE_TEST_MODE` keeps it in force regardless of the
-`settings.test_mode` row, so no database edit or UI action can put a real
-Sodimo address in play. Any other recipient is logged
-`skipped_test_mode` and never contacted — at enqueue, and again at drain, so a
-message queued before the rule tightened is cancelled rather than sent.
-Recipient lists can be prepared in the UI, but test mode remains forced until a
-separate, explicit production-readiness change.
+Active recipient-list members managed in the administration UI are the normal
+sending authority. At handoff, the only active member is
+`paul.ghafary@sodimo.eu`; `thomas@leger.run` and `tombionic@gmail.com` are
+removed by migration.
+
+`settings.test_mode` remains a fail-closed emergency restriction. When on, the
+code allowlist (`src/lib/guard.ts#TEST_MODE_ALLOWLIST`) permits only Paul; any
+other recipient is logged `skipped_test_mode` and never contacted. The check
+runs at enqueue and again at drain, so tightening the setting also cancels a
+previously queued disallowed message. `config.ts#FORCE_TEST_MODE` is off for
+the operational handoff, allowing the UI list to govern while the setting is
+explicitly off.
 
 ## The sharded outbox, and why
 
@@ -191,11 +193,12 @@ outcome is recorded in `append_status`/`append_response` and nowhere else.
 
 ### Admin UI and fetch()
 
-Every route requires `TRIGGER_TOKEN`. Automation can present it as
-`X-Trigger-Token` or `Authorization: Bearer`; a browser uses HTTP Basic with
-username `sodimo` and the token as password. There is no login page and no
-anonymous route — an unauthenticated request gets 401 even for an unknown path.
-State-changing browser requests also enforce same-origin/Sec-Fetch checks.
+The custom domain requires a Cloudflare Access identity assertion injected at
+the edge. The workers.dev hostname requires `TRIGGER_TOKEN`, presented as
+`X-Trigger-Token` or `Authorization: Bearer`; it never trusts an Access header.
+There is no HTTP Basic challenge and therefore no native browser password
+dialog. State-changing browser requests also enforce same-origin/Sec-Fetch
+checks.
 
 - `GET /` and `GET /admin` — French, responsive administration UI: jobs,
   friendly schedules, templates and variables, recipient lists, send/append

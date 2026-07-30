@@ -4,7 +4,7 @@ import { enqueue } from "../src/lib/enqueue.js";
 import type { Job, Recipient, Settings } from "../src/types.js";
 import { insertJob, outbox, sendLog } from "./helpers.js";
 
-const pinned: Recipient = { email: "thomas@leger.run", display_name: "Thomas" };
+const pinned: Recipient = { email: "paul.ghafary@sodimo.eu", display_name: "Paul" };
 const live: Settings = {
   kill_switch: "off",
   test_mode: "on",
@@ -37,7 +37,7 @@ describe("the happy path", () => {
 
     const log = await sendLog();
     expect(log).toHaveLength(1);
-    expect(log[0]).toMatchObject({ status: "pending", recipient: "thomas@leger.run" });
+    expect(log[0]).toMatchObject({ status: "pending", recipient: "paul.ghafary@sodimo.eu" });
 
     const queued = await outbox();
     expect(queued).toHaveLength(1);
@@ -77,7 +77,10 @@ describe("idempotency", () => {
     await queue();
     expect((await queue({ dedupeKey: "run:2026-07-30T06:00Z" })).result).toBe("queued");
     expect(
-      (await queue({ recipient: { email: "paul.ghafary@sodimo.eu", display_name: null } })).result,
+      (await queue({
+        settings: { ...live, test_mode: "off" },
+        recipient: { email: "rani@sodimo.eu", display_name: null },
+      })).result,
     ).toBe("queued");
     expect((await queue({ job: await insertJob({ name: "enqueue-test-2" }) })).result).toBe("queued");
     expect(await outbox()).toHaveLength(4);
