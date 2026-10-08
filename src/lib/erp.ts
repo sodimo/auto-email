@@ -1,7 +1,11 @@
 /**
  * Production ERP mirror readiness gate.
  *
- * The NAS loader replaces one table at a time with DELETE + chunked INSERTs.
+ * Incremental NAS loads publish one completion record in etl_run. Unchanged
+ * rows deliberately keep their loaded_at, so row timestamps cannot establish
+ * readiness after that cutover. The completion record supplies verified counts.
+ * The legacy path below is used only while the ledger table does not exist.
+ * The previous NAS loader replaces one table at a time with DELETE + chunked INSERTs.
  * A query during that window can otherwise see a plausible but partial table.
  * The loader stamps every table in one run with the same `loaded_at` value, so
  * readiness requires:
@@ -38,6 +42,8 @@ export interface ErpSnapshot {
 }
 
 export interface ErpReadiness {
+  /** Present only for a verified incremental run; legacy bulk loads have no revision. */
+  runId?: string;
   ready: boolean;
   reason: string | null;
   loadedAt: string | null;
@@ -55,6 +61,55 @@ export class ErpNotReadyError extends Error {
     super(message);
     this.name = "ErpNotReadyError";
   }
+}
+
+export interface ErpRun {
+  run_id: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  source_loaded_at: string;
+  counts_json: string;
+  latest_sales_day: string | null;
+}
+
+function unavailable(reason: string): ErpReadiness {
+  return {
+    ready: false, reason, loadedAt: null, latestSalesDay: null,
+    counts: { fact_ventes: 0, dim_client: 0, fact_reglements: 0, fact_echeances: 0 },
+  };
+}
+
+export function validateErpRun(run: ErpRun | null, now = new Date()): ErpReadiness {
+  if (!run || run.status !== "ok" || typeof run.run_id !== "string" || !run.run_id.trim()) {
+    return unavailable("Le dernier chargement ERP n’est pas terminé avec succès.");
+  }
+  const started = Date.parse(run.started_at);
+  const finished = Date.parse(run.finished_at ?? "");
+  const source = Date.parse(run.source_loaded_at);
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || !Number.isFinite(source)
+      || finished < started || source > finished || source > now.getTime()
+      || now.getTime() - source > MAX_AGE_MS) {
+    return unavailable("Le suivi du chargement ERP contient des dates invalides ou trop anciennes.");
+  }
+  let counts: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(run.counts_json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("counts");
+    counts = parsed as Record<string, unknown>;
+  } catch {
+    return unavailable("Le comptage du dernier chargement ERP est illisible.");
+  }
+  // Reuse the same cardinality, settling and freshness checks as before.
+  // Every stamp represents the completed run, not a changed row's timestamp.
+  const readiness = validateErpSnapshot({
+    fact_ventes: Number(counts.fact_ventes), dim_client: Number(counts.dim_client),
+    fact_reglements: Number(counts.fact_reglements), fact_echeances: Number(counts.fact_echeances),
+    ventes_loaded_at: run.finished_at, clients_loaded_at: run.finished_at,
+    reglements_loaded_at: run.finished_at, echeances_loaded_at: run.finished_at,
+    latest_sales_day: run.latest_sales_day,
+  }, now);
+  return { ...readiness, runId: run.run_id };
 }
 
 const SNAPSHOT_SQL = `
@@ -188,12 +243,49 @@ export function validateErpSnapshot(snapshot: ErpSnapshot, now = new Date()): Er
 }
 
 export async function erpReadiness(db: D1Database, now = new Date()): Promise<ErpReadiness> {
-  return validateErpSnapshot(await readErpSnapshot(db), now);
+  try {
+    const run = await db.prepare(
+      `SELECT run_id, status, started_at, finished_at, source_loaded_at, counts_json, latest_sales_day
+         FROM etl_run WHERE id = 'latest'`,
+    ).first<ErpRun>();
+    return validateErpRun(run, now);
+  } catch (error) {
+    // Only a not-yet-installed ledger permits the old bulk-loader gate.
+    // Quota, network, malformed schema and failed/partial imports never do.
+    if (!(error instanceof Error) || !/no such table:\s*(?:main\.)?etl_run\b/i.test(error.message)) {
+      throw error;
+    }
+    return validateErpSnapshot(await readErpSnapshot(db), now);
+  }
 }
 
-export async function assertErpReady(db: D1Database, now = new Date()): Promise<void> {
+export async function assertErpReady(db: D1Database, now = new Date()): Promise<ErpReadiness> {
   const readiness = await erpReadiness(db, now);
   if (!readiness.ready) {
     throw new ErpNotReadyError(`Miroir ERP non prêt : ${readiness.reason}`);
+  }
+  return readiness;
+}
+
+/** Reject data collected across a delta or cutover, before any outbox writes. */
+export async function assertErpUnchanged(
+  db: D1Database,
+  before: ErpReadiness,
+  now = new Date(),
+): Promise<void> {
+  let run: ErpRun | null;
+  try {
+    run = await db.prepare(
+      `SELECT run_id, status, started_at, finished_at, source_loaded_at, counts_json, latest_sales_day
+         FROM etl_run WHERE id = 'latest'`,
+    ).first<ErpRun>();
+  } catch (error) {
+    // Before cutover, retain the existing legacy gate without repeating its scans.
+    if (!before.runId && error instanceof Error && /no such table:\s*(?:main\.)?etl_run\b/i.test(error.message)) return;
+    throw error;
+  }
+  const after = validateErpRun(run, now);
+  if (!before.runId || !after.ready || after.runId !== before.runId || after.loadedAt !== before.loadedAt) {
+    throw new ErpNotReadyError("Le chargement ERP a changé pendant le rapport; aucun message n’a été mis en attente. Réessayez après la fin du chargement.");
   }
 }

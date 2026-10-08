@@ -16,7 +16,7 @@ import { dueSlots, isoMinute } from "./lib/cron.js";
 import { resolveDataSource } from "./lib/datasource.js";
 import { loadEnabledJobs, loadJob, loadRecipients, loadSettings, loadTemplate } from "./lib/db.js";
 import { enqueue } from "./lib/enqueue.js";
-import { assertErpReady } from "./lib/erp.js";
+import { assertErpReady, assertErpUnchanged } from "./lib/erp.js";
 import { guardRun, normalizeEmail } from "./lib/guard.js";
 import { buildRowsTableHtml, buildRowsText, frenchDate, render } from "./lib/render.js";
 import type { DataRow, Env, Job, JobResult, Recipient, RecipientKind, Settings } from "./types.js";
@@ -157,8 +157,9 @@ export async function runJob(env: Env, settings: Settings, job: Job, trigger: Tr
 
   let rows: DataRow[] = [];
   if (job.condition_sql) {
-    if (job.source === "erp") await assertErpReady(env.ERP, now);
+    const before = job.source === "erp" ? await assertErpReady(env.ERP, now) : null;
     rows = await resolveDataSource(env, job.source).query(job.condition_sql);
+    if (before) await assertErpUnchanged(env.ERP, before, now);
   }
   result.rowCount = rows.length;
 

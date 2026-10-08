@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { resolveDataSource } from "../src/lib/datasource.js";
-import { ERP_ROW_FLOORS, validateErpSnapshot, type ErpSnapshot } from "../src/lib/erp.js";
+import { ERP_ROW_FLOORS, erpReadiness, validateErpRun, validateErpSnapshot, type ErpRun, type ErpSnapshot } from "../src/lib/erp.js";
 import { NIGHTLY_DIGEST_SQL, OVERDUE_PAYMENTS_SQL } from "../src/lib/job-presets.js";
 
 const NOW = new Date("2026-07-29T08:00:00Z");
@@ -69,6 +69,43 @@ describe("ERP readiness", () => {
       const result = validateErpSnapshot(healthySnapshot(overrides), NOW);
       expect(result.ready, reason).toBe(false);
       expect(result.reason?.toLowerCase(), reason).toContain(reason);
+    }
+  });
+});
+
+describe("incremental ERP completion", () => {
+  const completed: ErpRun = {
+    run_id: "run-complete", status: "ok", started_at: LOADED, finished_at: "2026-07-29T01:05:00Z",
+    source_loaded_at: LOADED, counts_json: JSON.stringify(ERP_ROW_FLOORS),
+    latest_sales_day: "2026-07-28",
+  };
+
+  it("accepts an unchanged but freshly verified run without querying ERP rows", async () => {
+    await env.ERP.prepare(`CREATE TABLE IF NOT EXISTS etl_run (
+      id TEXT PRIMARY KEY, run_id TEXT, status TEXT, started_at TEXT, finished_at TEXT,
+      source_loaded_at TEXT, counts_json TEXT, latest_sales_day TEXT
+    )`).run();
+    await env.ERP.prepare(`INSERT OR REPLACE INTO etl_run VALUES ('latest', ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(completed.run_id, completed.status, completed.started_at, completed.finished_at,
+        completed.source_loaded_at, completed.counts_json, completed.latest_sales_day).run();
+    expect(await erpReadiness(env.ERP, NOW)).toMatchObject({
+      ready: true, loadedAt: completed.finished_at, latestSalesDay: "2026-07-28",
+    });
+    await env.ERP.exec("DROP TABLE etl_run");
+  });
+
+  it("rejects missing, partial, failed, malformed, stale and future completion records", () => {
+    expect(validateErpRun(null, NOW).ready).toBe(false);
+    for (const patch of [
+      { run_id: "" }, { status: "running" }, { status: "failed" }, { finished_at: null },
+      { counts_json: "oops" }, { counts_json: "null" }, { counts_json: "[]" },
+      { counts_json: JSON.stringify({ ...ERP_ROW_FLOORS, fact_ventes: 99_999 }) },
+      { source_loaded_at: "2026-07-26T01:00:00Z" },
+      { finished_at: "2026-07-29T00:00:00Z" },
+      { finished_at: "2026-07-29T09:00:00Z" },
+      { finished_at: "2026-07-29T07:55:00Z" },
+    ]) {
+      expect(validateErpRun({ ...completed, ...patch }, NOW).ready, JSON.stringify(patch)).toBe(false);
     }
   });
 });

@@ -333,3 +333,51 @@ describe("enqueue then drain, end to end", () => {
     });
   });
 });
+
+describe("ERP revision consistency before enqueue", () => {
+  function erpDuringReport(change: "unchanged" | "running" | "failed" | "revision" | "completion" | "missing") {
+    let run: Record<string, unknown> | null = {
+      run_id: "run-before", status: "ok", started_at: "2026-07-29T01:00:00Z",
+      finished_at: "2026-07-29T01:05:00Z", source_loaded_at: "2026-07-29T01:00:00Z",
+      counts_json: JSON.stringify({ fact_ventes: 100000, dim_client: 1000, fact_reglements: 10000, fact_echeances: 10000 }),
+      latest_sales_day: "2026-07-28",
+    };
+    let ledgerReads = 0;
+    const erp = {
+      prepare(sql: string) {
+        if (sql.includes("FROM etl_run")) return { async first() { ledgerReads++; return run ? { ...run } : null; } };
+        return { async all() {
+          if (change === "missing") run = null;
+          else if (change === "running" || change === "failed") run!.status = change;
+          else if (change === "revision") run!.run_id = "run-after";
+          else if (change === "completion") run!.finished_at = "2026-07-29T01:06:00Z";
+          return { results: [{ label: "report result" }] };
+        } };
+      },
+    } as unknown as D1Database;
+    return { erp, reads: () => ledgerReads };
+  }
+
+  for (const change of ["running", "failed", "revision", "completion", "missing"] as const) {
+    it(`rejects a ${change} ledger after the report query before any outbox/log writes`, async () => {
+      await insertJob({ name: "erp-race", source: "erp", condition_sql: "SELECT label FROM test_erp_rows" });
+      const fake = erpDuringReport(change);
+      const summary = await enqueueDueJobs({ ...env, ERP: fake.erp }, TICK);
+      expect(summary.jobs).toEqual([]);
+      expect(summary.skipped[0]?.reason).toContain("a changé pendant le rapport");
+      expect(fake.reads()).toBe(2);
+      expect(await outbox()).toEqual([]);
+      expect(await sendLog()).toEqual([]);
+    });
+  }
+
+  it("queues a report only when the successful revision and completion are unchanged", async () => {
+    await insertJob({ name: "erp-stable", source: "erp", condition_sql: "SELECT label FROM test_erp_rows" });
+    const fake = erpDuringReport("unchanged");
+    const summary = await enqueueDueJobs({ ...env, ERP: fake.erp }, TICK);
+    expect(fake.reads()).toBe(2);
+    expect(summary.jobs[0]).toMatchObject({ queued: 1 });
+    expect(await outbox()).toHaveLength(1);
+    expect((await outbox())[0]?.status).toBe("pending");
+  });
+});
