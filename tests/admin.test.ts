@@ -1,5 +1,7 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { loadAdminState } from "../src/admin/service.js";
+import { ERP_ROW_FLOORS } from "../src/lib/erp.js";
 import { OVERDUE_PAYMENTS_SQL } from "../src/lib/job-presets.js";
 import { cronToSchedule, scheduleLabel, scheduleToCron } from "../src/admin/schedule.js";
 import { friendlyBodyToHtml } from "../src/admin/template.js";
@@ -408,5 +410,44 @@ describe("templates, recipients, history and kill switch", () => {
       append_status: "failed",
       append_response: "APPEND failed: quota",
     });
+  });
+});
+
+
+describe("cheap ERP readiness in the admin UI", () => {
+  function fakeErp(run: unknown, queries: string[]) {
+    return {
+      prepare(sql: string) {
+        queries.push(sql);
+        if (!sql.includes("FROM etl_run")) throw new Error("Unexpected ERP data scan");
+        return { async first() {
+          if (run instanceof Error) throw run;
+          return run;
+        } };
+      },
+    } as unknown as D1Database;
+  }
+
+  it("keeps admin controls usable without scanning ERP tables before ledger installation", async () => {
+    const queries: string[] = [];
+    const ERP = fakeErp(new Error("D1_ERROR: no such table: etl_run: SQLITE_ERROR"), queries);
+    const result = await loadAdminState({ ...env, ERP }) as any;
+    expect(queries).toHaveLength(1);
+    expect(result.erp.ready).toBe(false);
+    expect(result.erp.reason).toContain("en attente du suivi");
+    expect(result.jobs).toHaveLength(2);
+    expect(result.safety).toBeDefined();
+  });
+
+  it("reports a completed ledger as ready with one metadata read", async () => {
+    const queries: string[] = [];
+    const stamp = new Date(Date.now() - 3600000).toISOString();
+    const ERP = fakeErp({ run_id: "complete", status: "ok", started_at: stamp,
+      finished_at: stamp, source_loaded_at: stamp, counts_json: JSON.stringify(ERP_ROW_FLOORS),
+      latest_sales_day: stamp.slice(0, 10) }, queries);
+    const result = await loadAdminState({ ...env, ERP }) as any;
+    expect(queries).toHaveLength(1);
+    expect(result.erp.ready).toBe(true);
+    expect(result.erp.runId).toBe("complete");
   });
 });

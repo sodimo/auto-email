@@ -242,7 +242,11 @@ export function validateErpSnapshot(snapshot: ErpSnapshot, now = new Date()): Er
   };
 }
 
-export async function erpReadiness(db: D1Database, now = new Date()): Promise<ErpReadiness> {
+export async function erpReadiness(
+  db: D1Database,
+  now = new Date(),
+  options: { allowLegacy?: boolean } = {},
+): Promise<ErpReadiness> {
   try {
     const run = await db.prepare(
       `SELECT run_id, status, started_at, finished_at, source_loaded_at, counts_json, latest_sales_day
@@ -254,6 +258,9 @@ export async function erpReadiness(db: D1Database, now = new Date()): Promise<Er
     // Quota, network, malformed schema and failed/partial imports never do.
     if (!(error instanceof Error) || !/no such table:\s*(?:main\.)?etl_run\b/i.test(error.message)) {
       throw error;
+    }
+    if (options.allowLegacy === false) {
+      return unavailable("État ERP en attente du suivi de chargement. Les destinataires, l’historique et les réglages restent disponibles.");
     }
     return validateErpSnapshot(await readErpSnapshot(db), now);
   }

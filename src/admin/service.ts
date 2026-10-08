@@ -615,7 +615,7 @@ export async function loadAdminState(env: Env): Promise<unknown> {
   const testMode = FORCE_TEST_MODE || settings["test_mode"] !== "off";
   let erp: ErpReadiness;
   try {
-    erp = await erpReadiness(env.ERP);
+    erp = await erpReadiness(env.ERP, new Date(), { allowLegacy: false });
   } catch (cause) {
     erp = {
       ready: false,
