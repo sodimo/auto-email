@@ -53,6 +53,23 @@ message writes about 16 rows per recipient.
 To park it again: set `DORMANT` back to `on` and `crons` back to `[]`, push,
 run `deploy`.
 
+## Account-wide D1 rules (every Sodimo repo)
+
+- The Sodimo Cloudflare account is on the Free plan: 5,000,000 D1 rows read and
+  100,000 rows written per day, shared by every database (auto-email, crm,
+  sodimo-prod), reset at 00:00 UTC (02:00 Paris in summer, 01:00 in winter).
+  Once spent, every Sodimo app that uses D1 fails until the reset.
+- Here the operations lead is Paul (on call) and the technical lead is Rani
+  (technical owner). Only the two together change `DORMANT`, the cron list,
+  `settings.kill_switch` or a job's enabled flag. Keep them as they are.
+- Every `env.ERP` (sodimo-prod) query filters by client or by month, or reads
+  the row markers, with `LIMIT`. D1 bills rows scanned, not rows returned:
+  never a bare `SELECT` or `COUNT(*)` over `fact_ventes`, `fact_stocks_dep`,
+  `fact_reglements`, `fact_echeances` or `fact_lots`.
+- Never `wrangler d1 execute` bulk statements on production, and never run the
+  old ETL bulk loader or "protocole A" (full reload).
+- Before pushing: `npm ci`, `npm run check`, `npm test` (local D1 only).
+
 ## Commands
 
 Node is not on `PATH` on this NixOS host. Get it from the store, e.g.:
