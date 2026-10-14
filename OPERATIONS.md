@@ -65,6 +65,27 @@ The built-in sales report runs daily at 06:00 UTC. The overdue-payment estimate
 runs Mondays at 07:00 UTC. ERP jobs refuse to run while the nightly mirror is
 partial, still settling, or older than 36 hours.
 
+## Daily D1 limits (Cloudflare Free)
+
+All Sodimo D1 databases share one account allowance: 5,000,000 rows read and
+100,000 rows written per day, reset at 00:00 UTC. Reads cost per row visited,
+not per row returned.
+
+- Opening this site checks ERP freshness from about a dozen marker rows.
+- The daily sales digest reads about 400 ERP rows per run.
+- The Monday overdue review reads about 1.8 million ERP rows per run, about a
+  third of a day's allowance. Enable it only when the rest of the account has
+  room that day.
+- Each delivered message writes about 16 rows here per recipient (queue,
+  history and their indexes).
+
+While the NAS still runs the full-reload loader (about 3.3 million rows written
+each night shortly before 01:00 UTC), D1 has been observed refusing writes for
+the rest of the UTC day. The administration site still opens, but saving a
+recipient, a job or the kill switch fails, and scheduled reports cannot be
+queued. That failure is safe: a message is only sent after D1 has accepted a
+write for it, so nothing is sent twice.
+
 ## Emergency stop
 
 Use **Sécurité → Arrêter tous les envois**. The switch fails closed and holds

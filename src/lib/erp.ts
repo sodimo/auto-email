@@ -5,15 +5,24 @@
  * rows deliberately keep their loaded_at, so row timestamps cannot establish
  * readiness after that cutover. The completion record supplies verified counts.
  * The legacy path below is used only while the ledger table does not exist.
- * The previous NAS loader replaces one table at a time with DELETE + chunked INSERTs.
- * A query during that window can otherwise see a plausible but partial table.
- * The loader stamps every table in one run with the same `loaded_at` value, so
- * readiness requires:
+ * The current NAS loader replaces one table at a time with DELETE + chunked
+ * INSERTs. A query during that window can otherwise see a plausible but partial
+ * table. The loader stamps every table in one run with the same `loaded_at`
+ * value, so readiness requires:
  *   - conservative cardinality floors (copied from the dashboard posture),
- *   - all four tables needed by Wave 2 carrying the same load stamp,
+ *   - all four tables needed by Wave 2 carrying the same load stamp, on their
+ *     first and last rows (the whole table came from one load),
  *   - the stamp being at least 10 minutes old (the final table cannot still be
  *     receiving chunks), and
  *   - a load no older than 36 hours (do not email silently stale data).
+ *
+ * The legacy gate reads row MARKERS, never whole tables. Because the loader
+ * starts each table from empty, rowids restart at 1 and the last rowid is the
+ * row count; the first and last rows carry the load stamp. Each marker is one
+ * row read, and the latest sales-invoice day walks the date index backwards.
+ * About a dozen rows read per check, instead of the ~1.35 million that
+ * COUNT(*) and MAX(loaded_at) over the four tables cost (measured locally at
+ * production scale; there is no index on loaded_at).
  *
  * D1 has no read-only binding flag. The ERP binding is logically read-only
  * because every job query still goes through assertReadOnlySql.
@@ -39,6 +48,11 @@ export interface ErpSnapshot {
   reglements_loaded_at: string | null;
   echeances_loaded_at: string | null;
   latest_sales_day: string | null;
+  /** Load stamp of each table's FIRST row (legacy markers only). */
+  ventes_first_loaded_at?: string | null;
+  clients_first_loaded_at?: string | null;
+  reglements_first_loaded_at?: string | null;
+  echeances_first_loaded_at?: string | null;
 }
 
 export interface ErpReadiness {
@@ -112,21 +126,28 @@ export function validateErpRun(run: ErpRun | null, now = new Date()): ErpReadine
   return { ...readiness, runId: run.run_id };
 }
 
-const SNAPSHOT_SQL = `
+/** One row read per marker; see the header. INDEXED BY makes a missing index
+ *  fail loudly instead of silently falling back to a full scan. */
+export const MARKER_SNAPSHOT_SQL = `
 SELECT
-  (SELECT COUNT(*) FROM fact_ventes) AS fact_ventes,
-  (SELECT COUNT(*) FROM dim_client) AS dim_client,
-  (SELECT COUNT(*) FROM fact_reglements) AS fact_reglements,
-  (SELECT COUNT(*) FROM fact_echeances) AS fact_echeances,
-  (SELECT MAX(loaded_at) FROM fact_ventes) AS ventes_loaded_at,
-  (SELECT MAX(loaded_at) FROM dim_client) AS clients_loaded_at,
-  (SELECT MAX(loaded_at) FROM fact_reglements) AS reglements_loaded_at,
-  (SELECT MAX(loaded_at) FROM fact_echeances) AS echeances_loaded_at,
-  (SELECT MAX(date) FROM fact_ventes WHERE type = 'VF') AS latest_sales_day
+  (SELECT rowid FROM fact_ventes ORDER BY rowid DESC LIMIT 1) AS fact_ventes,
+  (SELECT rowid FROM dim_client ORDER BY rowid DESC LIMIT 1) AS dim_client,
+  (SELECT rowid FROM fact_reglements ORDER BY rowid DESC LIMIT 1) AS fact_reglements,
+  (SELECT rowid FROM fact_echeances ORDER BY rowid DESC LIMIT 1) AS fact_echeances,
+  (SELECT loaded_at FROM fact_ventes ORDER BY rowid DESC LIMIT 1) AS ventes_loaded_at,
+  (SELECT loaded_at FROM dim_client ORDER BY rowid DESC LIMIT 1) AS clients_loaded_at,
+  (SELECT loaded_at FROM fact_reglements ORDER BY rowid DESC LIMIT 1) AS reglements_loaded_at,
+  (SELECT loaded_at FROM fact_echeances ORDER BY rowid DESC LIMIT 1) AS echeances_loaded_at,
+  (SELECT loaded_at FROM fact_ventes ORDER BY rowid ASC LIMIT 1) AS ventes_first_loaded_at,
+  (SELECT loaded_at FROM dim_client ORDER BY rowid ASC LIMIT 1) AS clients_first_loaded_at,
+  (SELECT loaded_at FROM fact_reglements ORDER BY rowid ASC LIMIT 1) AS reglements_first_loaded_at,
+  (SELECT loaded_at FROM fact_echeances ORDER BY rowid ASC LIMIT 1) AS echeances_first_loaded_at,
+  (SELECT date FROM fact_ventes INDEXED BY idx_fact_ventes_date
+    WHERE type = 'VF' ORDER BY date DESC LIMIT 1) AS latest_sales_day
 `;
 
 export async function readErpSnapshot(db: D1Database): Promise<ErpSnapshot> {
-  const row = await db.prepare(SNAPSHOT_SQL).first<ErpSnapshot>();
+  const row = await db.prepare(MARKER_SNAPSHOT_SQL).first<ErpSnapshot>();
   if (!row) throw new ErpNotReadyError("Le miroir ERP n’a retourné aucun état de chargement.");
   return row;
 }
@@ -172,7 +193,17 @@ export function validateErpSnapshot(snapshot: ErpSnapshot, now = new Date()): Er
     };
   }
 
+  const firstStamps = [
+    snapshot.ventes_first_loaded_at,
+    snapshot.clients_first_loaded_at,
+    snapshot.reglements_first_loaded_at,
+    snapshot.echeances_first_loaded_at,
+  ];
   const distinct = new Set(stamps as string[]);
+  for (const first of firstStamps) {
+    // Undefined means "not measured" (ledger path); null means an empty table.
+    if (first !== undefined) distinct.add(first ?? "");
+  }
   if (distinct.size !== 1) {
     return {
       ready: false,
@@ -242,11 +273,11 @@ export function validateErpSnapshot(snapshot: ErpSnapshot, now = new Date()): Er
   };
 }
 
-export async function erpReadiness(
-  db: D1Database,
-  now = new Date(),
-  options: { allowLegacy?: boolean } = {},
-): Promise<ErpReadiness> {
+function isMissingLedger(error: unknown): boolean {
+  return error instanceof Error && /no such table:\s*(?:main\.)?etl_run\b/i.test(error.message);
+}
+
+export async function erpReadiness(db: D1Database, now = new Date()): Promise<ErpReadiness> {
   try {
     const run = await db.prepare(
       `SELECT run_id, status, started_at, finished_at, source_loaded_at, counts_json, latest_sales_day
@@ -256,12 +287,7 @@ export async function erpReadiness(
   } catch (error) {
     // Only a not-yet-installed ledger permits the old bulk-loader gate.
     // Quota, network, malformed schema and failed/partial imports never do.
-    if (!(error instanceof Error) || !/no such table:\s*(?:main\.)?etl_run\b/i.test(error.message)) {
-      throw error;
-    }
-    if (options.allowLegacy === false) {
-      return unavailable("État ERP en attente du suivi de chargement. Les destinataires, l’historique et les réglages restent disponibles.");
-    }
+    if (!isMissingLedger(error)) throw error;
     return validateErpSnapshot(await readErpSnapshot(db), now);
   }
 }
@@ -287,9 +313,18 @@ export async function assertErpUnchanged(
          FROM etl_run WHERE id = 'latest'`,
     ).first<ErpRun>();
   } catch (error) {
-    // Before cutover, retain the existing legacy gate without repeating its scans.
-    if (!before.runId && error instanceof Error && /no such table:\s*(?:main\.)?etl_run\b/i.test(error.message)) return;
-    throw error;
+    if (before.runId || !isMissingLedger(error)) throw error;
+    // Before cutover the markers are cheap, so re-read them: a nightly load
+    // that started or finished while the report ran changes the stamp or a
+    // row count, and the report must not be queued.
+    const after = validateErpSnapshot(await readErpSnapshot(db), now);
+    const same = after.ready && after.loadedAt === before.loadedAt &&
+      after.latestSalesDay === before.latestSalesDay &&
+      JSON.stringify(after.counts) === JSON.stringify(before.counts);
+    if (!same) {
+      throw new ErpNotReadyError("Le chargement ERP a changé pendant le rapport; aucun message n’a été mis en attente. Réessayez après la fin du chargement.");
+    }
+    return;
   }
   const after = validateErpRun(run, now);
   if (!before.runId || !after.ready || after.runId !== before.runId || after.loadedAt !== before.loadedAt) {

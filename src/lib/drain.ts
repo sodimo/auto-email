@@ -44,6 +44,8 @@ export interface DrainSummary {
 }
 
 const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+/** A leased row is never picked up again by the drain's due-row query. */
+const LEASE_UNTIL = "9999-12-31T23:59:59Z";
 type DrainRow = OutboxRow;
 type SendableRow = DrainRow & { toRecipients: MessageAddress[]; ccRecipients: MessageAddress[] };
 type CurrentPlan = { to: Set<string>; cc: Set<string> };
@@ -281,6 +283,28 @@ export async function drainOutbox(env: Env, options: DrainOptions = {}): Promise
         text: row.body_text,
         messageId: row.rfc_message_id,
       });
+
+      // Write-ahead lease. Nothing is sent unless D1 has just accepted a write
+      // for this row. Without it, a D1 that refuses writes (daily row-write
+      // limit reached, outage) lets the send succeed but not the bookkeeping,
+      // and the next tick re-sends the same message every five minutes. The
+      // lease also stops two concurrent drains from sending one row twice.
+      // If the bookkeeping below fails after a send, the row keeps its lease:
+      // it stays visible as pending in /healthz and is never re-sent.
+      let leased: boolean;
+      try {
+        const lease = await env.DB.prepare(
+          `UPDATE outbox SET next_attempt_at = '${LEASE_UNTIL}'
+            WHERE id = ? AND status = 'pending' AND next_attempt_at <= ${NOW_SQL}`,
+        )
+          .bind(row.id)
+          .run();
+        leased = Number(lease.meta.changes ?? 0) === 1;
+      } catch (cause) {
+        summary.errors.push(`D1 refused the pre-send write; nothing more is sent this run: ${describe(cause)}`);
+        break;
+      }
+      if (!leased) continue;
 
       let response: string;
       try {

@@ -4,6 +4,7 @@ import { SmtpError } from "../vendor/worker-mailer/index.js";
 import { drainOutbox } from "../src/lib/drain.js";
 import { enqueueDueJobs, runJobById } from "../src/runner.js";
 import { addRecipient, FakeTransport, insertJob, outbox, sendLog, setSetting } from "./helpers.js";
+import { OVERDUE_PAYMENTS_SQL } from "../src/lib/job-presets.js";
 
 const TICK = new Date("2026-07-29T06:00:00Z").getTime();
 const noAppender = async () => null;
@@ -381,3 +382,93 @@ describe("ERP revision consistency before enqueue", () => {
     expect((await outbox())[0]?.status).toBe("pending");
   });
 });
+
+describe("ERP consistency with the current NAS loader (no etl_run ledger)", () => {
+  /** Markers move when a nightly load lands while the report query runs. */
+  function legacyErp(change: "unchanged" | "stamp" | "count") {
+    const markers = {
+      fact_ventes: 100000, dim_client: 1000, fact_reglements: 10000, fact_echeances: 10000,
+      ventes_loaded_at: "2026-07-29T01:00:00Z", clients_loaded_at: "2026-07-29T01:00:00Z",
+      reglements_loaded_at: "2026-07-29T01:00:00Z", echeances_loaded_at: "2026-07-29T01:00:00Z",
+      ventes_first_loaded_at: "2026-07-29T01:00:00Z", clients_first_loaded_at: "2026-07-29T01:00:00Z",
+      reglements_first_loaded_at: "2026-07-29T01:00:00Z", echeances_first_loaded_at: "2026-07-29T01:00:00Z",
+      latest_sales_day: "2026-07-28",
+    };
+    let markerReads = 0;
+    const erp = {
+      prepare(sql: string) {
+        if (sql.includes("FROM etl_run")) {
+          return { async first() { throw new Error("D1_ERROR: no such table: etl_run: SQLITE_ERROR"); } };
+        }
+        if (sql.includes("ORDER BY rowid DESC LIMIT 1")) {
+          return { async first() { markerReads++; return { ...markers }; } };
+        }
+        return { async all() {
+          if (change === "count") markers.fact_ventes = 100500;
+          if (change === "stamp") {
+            for (const key of Object.keys(markers) as (keyof typeof markers)[]) {
+              if (key.endsWith("loaded_at")) (markers as Record<string, unknown>)[key] = "2026-07-29T05:55:00Z";
+            }
+          }
+          return { results: [{ label: "report result" }] };
+        } };
+      },
+    } as unknown as D1Database;
+    return { erp, reads: () => markerReads };
+  }
+
+  for (const change of ["stamp", "count"] as const) {
+    it(`does not queue a report when the load ${change} changed during the query`, async () => {
+      await insertJob({ name: "erp-legacy-race", source: "erp", condition_sql: "SELECT label FROM test_erp_rows" });
+      const fake = legacyErp(change);
+      const summary = await enqueueDueJobs({ ...env, ERP: fake.erp }, TICK);
+      expect(summary.jobs).toEqual([]);
+      expect(summary.skipped[0]?.reason).toContain("a changé pendant le rapport");
+      expect(fake.reads()).toBe(2);
+      expect(await outbox()).toEqual([]);
+      expect(await sendLog()).toEqual([]);
+    });
+  }
+
+  it("queues the report when the markers are unchanged", async () => {
+    await insertJob({ name: "erp-legacy-stable", source: "erp", condition_sql: "SELECT label FROM test_erp_rows" });
+    const fake = legacyErp("unchanged");
+    const summary = await enqueueDueJobs({ ...env, ERP: fake.erp }, TICK);
+    expect(fake.reads()).toBe(2);
+    expect(summary.jobs[0]).toMatchObject({ queued: 1 });
+  });
+
+  it("runs the built-in report SQL shipped with the code, not the copy saved in D1", async () => {
+    const seen: string[] = [];
+    const erp = {
+      prepare(sql: string) {
+        if (sql.includes("FROM etl_run")) {
+          return { async first() { throw new Error("D1_ERROR: no such table: etl_run: SQLITE_ERROR"); } };
+        }
+        if (sql.includes("ORDER BY rowid DESC LIMIT 1") && !sql.includes("WITH")) {
+          return { async first() { return legacyErpMarkers(); } };
+        }
+        seen.push(sql);
+        return { async all() { return { results: [] }; } };
+      },
+    } as unknown as D1Database;
+    await insertJob({
+      name: "stale-preset", kind: "condition", source: "erp", preset: "overdue_30",
+      condition_sql: "SELECT 'stale copy' AS label",
+    });
+    await enqueueDueJobs({ ...env, ERP: erp }, TICK);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(OVERDUE_PAYMENTS_SQL);
+  });
+});
+
+function legacyErpMarkers() {
+  const stamp = "2026-07-29T01:00:00Z";
+  return {
+    fact_ventes: 100000, dim_client: 1000, fact_reglements: 10000, fact_echeances: 10000,
+    ventes_loaded_at: stamp, clients_loaded_at: stamp, reglements_loaded_at: stamp, echeances_loaded_at: stamp,
+    ventes_first_loaded_at: stamp, clients_first_loaded_at: stamp,
+    reglements_first_loaded_at: stamp, echeances_first_loaded_at: stamp,
+    latest_sales_day: "2026-07-28",
+  };
+}

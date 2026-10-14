@@ -156,6 +156,10 @@ describe("built-in ERP job queries", () => {
         qte REAL, pvnet REAL, pmpa REAL, loaded_at TEXT
       )`,
     ).run();
+    // Same index as sodimo/etl migration 0005; the digest names it explicitly.
+    await env.ERP.prepare(
+      "CREATE INDEX IF NOT EXISTS idx_fact_ventes_date ON fact_ventes(date)",
+    ).run();
     await env.ERP.prepare(
       `CREATE TABLE IF NOT EXISTS dim_client (
         code TEXT, type TEXT, nom TEXT, loaded_at TEXT

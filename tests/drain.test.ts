@@ -346,3 +346,74 @@ describe("sender identity", () => {
     expect(transport.sent[0]!.raw).toContain("Reply-To: rapports@sodimo.eu");
   });
 });
+
+describe("D1 refusing writes (daily row-write limit or outage)", () => {
+  const QUOTA = "D1_ERROR: Exceeded D1's free tier daily row write limit";
+
+  /** env.DB, except that statements matching `match` fail on run(). */
+  function refusing(match: (sql: string) => boolean, refuseBatch = false): D1Database {
+    const db = env.DB;
+    const wrap = <T extends object>(target: T, override: Record<string, unknown>): T =>
+      new Proxy(target, {
+        get(t, prop) {
+          if (typeof prop === "string" && prop in override) return override[prop];
+          const value = Reflect.get(t, prop);
+          return typeof value === "function" ? value.bind(t) : value;
+        },
+      });
+    return wrap(db, {
+      prepare: (sql: string) => {
+        const statement = db.prepare(sql);
+        if (!match(sql)) return statement;
+        return wrap(statement, {
+          bind: (...args: unknown[]) =>
+            wrap(statement.bind(...args), { run: async () => { throw new Error(QUOTA); } }),
+        });
+      },
+      ...(refuseBatch ? { batch: async () => { throw new Error(QUOTA); } } : {}),
+    });
+  }
+
+  it("sends nothing when the pre-send write is refused, and leaves the queue due", async () => {
+    await queueMessages(2);
+    const transport = new FakeTransport();
+    const DB = refusing((sql) => sql.includes("SET next_attempt_at = '9999"));
+
+    const summary = await drainOutbox({ ...env, DB }, { transport, openAppender: noAppender });
+
+    expect(transport.sent).toHaveLength(0);
+    expect(summary.sent).toBe(0);
+    expect(summary.errors[0]).toContain("pre-send write");
+    expect((await outbox()).map((r) => r.status)).toEqual(["pending", "pending"]);
+    const retry = await drainOutbox(env, { transport, openAppender: noAppender });
+    expect(retry.sent).toBe(2);
+  });
+
+  it("never re-sends a delivered message whose bookkeeping write failed", async () => {
+    await queueMessages(1);
+    const transport = new FakeTransport();
+    const DB = refusing(() => false, true);
+
+    await expect(drainOutbox({ ...env, DB }, { transport, openAppender: noAppender })).rejects.toThrow(/write limit/);
+    expect(transport.sent).toHaveLength(1);
+
+    for (let tick = 0; tick < 3; tick++) {
+      const again = await drainOutbox(env, { transport, openAppender: noAppender });
+      expect(again.scanned).toBe(0);
+    }
+    expect(transport.sent).toHaveLength(1);
+    const [row] = await outbox();
+    expect(row!.status).toBe("pending");
+  });
+
+  it("does not let two overlapping drains send one row twice", async () => {
+    await queueMessages(1);
+    const transport = new FakeTransport();
+    const [a, b] = await Promise.all([
+      drainOutbox(env, { transport, openAppender: noAppender }),
+      drainOutbox(env, { transport, openAppender: noAppender }),
+    ]);
+    expect(a.sent + b.sent).toBe(1);
+    expect(transport.sent).toHaveLength(1);
+  });
+});

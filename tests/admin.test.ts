@@ -1,7 +1,7 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { loadAdminState } from "../src/admin/service.js";
-import { ERP_ROW_FLOORS } from "../src/lib/erp.js";
+import { ERP_ROW_FLOORS, MARKER_SNAPSHOT_SQL } from "../src/lib/erp.js";
 import { OVERDUE_PAYMENTS_SQL } from "../src/lib/job-presets.js";
 import { cronToSchedule, scheduleLabel, scheduleToCron } from "../src/admin/schedule.js";
 import { friendlyBodyToHtml } from "../src/admin/template.js";
@@ -428,13 +428,33 @@ describe("cheap ERP readiness in the admin UI", () => {
     } as unknown as D1Database;
   }
 
-  it("keeps admin controls usable without scanning ERP tables before ledger installation", async () => {
+  it("reads only row markers, never whole ERP tables, before ledger installation", async () => {
     const queries: string[] = [];
-    const ERP = fakeErp(new Error("D1_ERROR: no such table: etl_run: SQLITE_ERROR"), queries);
+    const stamp = new Date(Date.now() - 3600000).toISOString();
+    const ERP = {
+      prepare(sql: string) {
+        queries.push(sql);
+        if (sql.includes("FROM etl_run")) {
+          return { async first() { throw new Error("D1_ERROR: no such table: etl_run: SQLITE_ERROR"); } };
+        }
+        if (sql !== MARKER_SNAPSHOT_SQL) throw new Error("Unexpected ERP data scan");
+        return { async first() {
+          return {
+            ...ERP_ROW_FLOORS,
+            ventes_loaded_at: stamp, clients_loaded_at: stamp,
+            reglements_loaded_at: stamp, echeances_loaded_at: stamp,
+            ventes_first_loaded_at: stamp, clients_first_loaded_at: stamp,
+            reglements_first_loaded_at: stamp, echeances_first_loaded_at: stamp,
+            latest_sales_day: stamp.slice(0, 10),
+          };
+        } };
+      },
+    } as unknown as D1Database;
     const result = await loadAdminState({ ...env, ERP }) as any;
-    expect(queries).toHaveLength(1);
-    expect(result.erp.ready).toBe(false);
-    expect(result.erp.reason).toContain("en attente du suivi");
+    expect(queries).toHaveLength(2);
+    expect(queries[1]).not.toMatch(/COUNT\(|MAX\(/i);
+    expect(result.erp.ready).toBe(true);
+    expect(result.erp.loadedAt).toBe(stamp);
     expect(result.jobs).toHaveLength(2);
     expect(result.safety).toBeDefined();
   });

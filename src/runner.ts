@@ -18,6 +18,7 @@ import { loadEnabledJobs, loadJob, loadRecipients, loadSettings, loadTemplate } 
 import { enqueue } from "./lib/enqueue.js";
 import { assertErpReady, assertErpUnchanged } from "./lib/erp.js";
 import { guardRun, normalizeEmail } from "./lib/guard.js";
+import { sqlForPreset } from "./lib/job-presets.js";
 import { buildRowsTableHtml, buildRowsText, frenchDate, render } from "./lib/render.js";
 import type { DataRow, Env, Job, JobResult, Recipient, RecipientKind, Settings } from "./types.js";
 
@@ -155,10 +156,16 @@ export async function runJob(env: Env, settings: Settings, job: Job, trigger: Tr
     ...ccRecipients.map((recipient) => ({ recipient, kind: "cc" as const })),
   ];
 
+  // A built-in report always runs the SQL shipped with this code, not the copy
+  // saved in D1 when the job was created, so a cheaper or corrected preset
+  // takes effect on deploy without a D1 write.
+  const presetSql = job.preset && job.preset !== "custom" ? sqlForPreset(job.preset) : null;
+  const conditionSql = presetSql ?? job.condition_sql;
+
   let rows: DataRow[] = [];
-  if (job.condition_sql) {
+  if (conditionSql) {
     const before = job.source === "erp" ? await assertErpReady(env.ERP, now) : null;
-    rows = await resolveDataSource(env, job.source).query(job.condition_sql);
+    rows = await resolveDataSource(env, job.source).query(conditionSql);
     if (before) await assertErpUnchanged(env.ERP, before, now);
   }
   result.rowCount = rows.length;
