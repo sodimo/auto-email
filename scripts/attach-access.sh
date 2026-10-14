@@ -3,12 +3,12 @@ set -euo pipefail
 
 # Attach this hostname to the Access setup Sodimo already uses. The reusable
 # group is an existing account resource; this script does not create or change
-# group membership.
+# group membership. The policy admits the sodimo-staff group only, with no
+# individual address exceptions; re-running it removes any such exception.
 readonly DOMAIN="auto-email.sodimo.eu"
 readonly APP_NAME="Sodimo — Envois automatiques"
 readonly POLICY_NAME="Sodimo staff — accès existant"
 readonly STAFF_GROUP_ID="aff45195-219d-4943-8e3d-40f66c06a14d"
-readonly ADMIN_EMAIL="thomas@leger.run"
 readonly API_ROOT="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/access"
 
 require_command() {
@@ -96,14 +96,12 @@ app_id=$(jq -r '.id' <<<"$app")
 policy_payload=$(jq -n \
   --arg name "$POLICY_NAME" \
   --arg group_id "$STAFF_GROUP_ID" \
-  --arg admin_email "$ADMIN_EMAIL" \
   '{
     name: $name,
     decision: "allow",
     precedence: 1,
     include: [
-      {group: {id: $group_id}},
-      {email: {email: $admin_email}}
+      {group: {id: $group_id}}
     ],
     exclude: [],
     require: []
@@ -136,14 +134,13 @@ fi
 verified_response=$(api GET "/apps/${app_id}/policies")
 require_success "Vérification finale des politiques impossible" "$verified_response"
 jq -e \
-  --arg group_id "$STAFF_GROUP_ID" \
-  --arg admin_email "$ADMIN_EMAIL" '
+  --arg group_id "$STAFF_GROUP_ID" '
     (.result | length) == 1
     and .result[0].decision == "allow"
-    and any(.result[0].include[]?; .group.id? == $group_id)
-    and any(.result[0].include[]?; ((.email.email? // "") | ascii_downcase) == ($admin_email | ascii_downcase))
+    and ((.result[0].include // []) | length) == 1
+    and .result[0].include[0].group.id? == $group_id
   ' >/dev/null <<<"$verified_response" || {
-    echo "::error::La vérification finale ne retrouve pas le groupe Sodimo et l'accès administrateur attendus."
+    echo "::error::La vérification finale ne retrouve pas une règle limitée au seul groupe Sodimo."
     exit 1
   }
 

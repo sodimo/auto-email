@@ -236,6 +236,7 @@ export function adminPage(nonce: string): string {
     .safety-card h3 { margin: 0 0 8px; font-size: 15px; }
     .safety-card p { margin: 0 0 14px; color: var(--muted); }
     .safety-card.danger-card { border-color: #fecaca; }
+    .safety-card p.safety-note { margin: 14px 0 0; font-size: 12px; }
     .definition { display: grid; grid-template-columns: 150px 1fr; gap: 8px 14px; margin: 14px 0 0; }
     .definition dt { color: var(--muted); }
     .definition dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
@@ -483,6 +484,7 @@ export function adminPage(nonce: string): string {
               <h3>Arrêt général</h3>
               <p id="safety-kill-copy">Chargement de l’état…</p>
               <button id="safety-kill-button" class="danger-solid" type="button" disabled>Arrêter tous les envois</button>
+              <p class="safety-note" id="safety-d1-note">Quand la base de données (Cloudflare D1) refuse les écritures parce que la limite quotidienne est atteinte, l’arrêt général ne peut pas être modifié et aucun message n’est envoyé ; chaque tentative d’enregistrement affiche alors « Une erreur interne est survenue ». Le compteur repart à zéro à 00:00 UTC (2 h à Paris, 1 h en hiver).</p>
             </div>
             <div class="safety-card">
               <h3 id="recipient-control-title">Contrôle des destinataires</h3>
@@ -849,14 +851,22 @@ export function adminPage(nonce: string): string {
   function renderSafety() {
     const engaged = state.safety.kill_switch === "engaged";
     const testing = state.safety.test_mode === "on";
+    // From the jobs list already loaded with the page state: no extra request.
+    const idle = !engaged && !state.jobs.some((job) => job.enabled);
     $("#kill-banner").hidden = !engaged;
-    $("#side-kill-title").textContent = engaged ? "Envois arrêtés" : "Envois autorisés";
-    $("#side-kill-copy").textContent = engaged ? "La file reste en attente" : "L’arrêt général est désengagé";
+    $("#side-kill-title").textContent = engaged
+      ? "Envois arrêtés"
+      : idle ? "Arrêt général levé, aucun envoi actif" : "Envois autorisés";
+    $("#side-kill-copy").textContent = engaged
+      ? "La file reste en attente"
+      : idle ? "Tous les envois programmés sont en pause" : "L’arrêt général est désengagé";
     $("#side-kill-button").textContent = engaged ? "Reprendre" : "Arrêt général";
     $("#side-kill-button").className = engaged ? "" : "danger";
     $("#side-kill-button").disabled = false;
     $("#safety-kill-copy").textContent = engaged
       ? "Tous les déclenchements et tous les départs SMTP sont bloqués. Les messages déjà en file ne sont pas supprimés."
+      : idle
+      ? "L’arrêt général est levé, mais tous les envois sont en pause : aucun envoi programmé ne part. Un essai lancé avec « Tester » part quand même, et les messages déjà en file d’attente partent encore. Pour tout retenir, utilisez l’arrêt général."
       : "Les envois actifs peuvent être déclenchés selon leur programmation. Utilisez ce bouton en cas d’incident.";
     $("#safety-kill-button").textContent = engaged ? "Autoriser de nouveau les envois" : "Arrêter tous les envois";
     $("#safety-kill-button").className = engaged ? "primary" : "danger-solid";

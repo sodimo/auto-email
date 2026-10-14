@@ -53,11 +53,11 @@ PUT /accounts/<account id>/workers/domains
 hostname=auto-email.sodimo.eu, service=auto-email, zone_name=sodimo.eu
 ```
 
-The final workflow step attaches the existing `sodimo-staff` group and keeps
-Thomas's existing administrator identity as an Access-only exception. It does
-not create or edit the reusable group. Success requires an anonymous request to
-redirect to `sodimo.cloudflareaccess.com`; no manual Zero Trust change is
-normally required.
+The final workflow step attaches the existing `sodimo-staff` group as the only
+rule: no individual address is admitted outside that group, and re-running the
+step rewrites the managed policy back to the group alone. It does not create or
+edit the reusable group. Success requires an anonymous request to redirect to
+`sodimo.cloudflareaccess.com`; no manual Zero Trust change is normally required.
 
 ## Release a sending safely
 
