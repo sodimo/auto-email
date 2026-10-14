@@ -11,6 +11,7 @@
  *   kind = 'condition'           → zero rows means send nothing
  *   kind = 'digest'              → zero rows still sends ("Aucune donnée…")
  */
+import { DORMANT_REASON, isDormant } from "./lib/dormant.js";
 import { DASHBOARD_URL, TICK_MINUTES } from "./config.js";
 import { dueSlots, isoMinute } from "./lib/cron.js";
 import { resolveDataSource } from "./lib/datasource.js";
@@ -219,6 +220,9 @@ export async function runJob(env: Env, settings: Settings, job: Job, trigger: Tr
 /** The cron entry point: kill switch, then every enabled job whose schedule
  *  fired in the window this tick covers. */
 export async function enqueueDueJobs(env: Env, scheduledTime: number): Promise<RunSummary> {
+  if (isDormant(env)) {
+    return { at: new Date(scheduledTime).toISOString(), jobs: [], skipped: [], suppressed: DORMANT_REASON };
+  }
   const settings = await loadSettings(env.DB);
   const summary: RunSummary = { at: new Date(scheduledTime).toISOString(), jobs: [], skipped: [] };
 
@@ -256,6 +260,7 @@ export async function runJobById(
   env: Env,
   idOrName: Job | string,
 ): Promise<{ suppressed?: string; result?: JobResult }> {
+  if (isDormant(env)) return { suppressed: DORMANT_REASON };
   const settings = await loadSettings(env.DB);
   const run = guardRun(settings);
   if (!run.allowed) return { suppressed: run.reason };

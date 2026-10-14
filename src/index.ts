@@ -7,6 +7,9 @@
  *   POST /drain             drain the outbox without enqueueing anything
  *   GET  /healthz           D1, settings, secrets, switch states, queue backlog
  *
+ * While vars.DORMANT is not "off" (src/lib/dormant.ts) every path answers a
+ * static 503 "dormant" page or JSON and scheduled() returns at once: no D1.
+ *
  * Browser traffic on auto-email.sodimo.eu is authenticated by Cloudflare
  * Access. Machine traffic on workers.dev requires TRIGGER_TOKEN. There is no
  * anonymous surface at either hostname.
@@ -14,6 +17,7 @@
 import { handleAdminApi } from "./admin/routes.js";
 import { adminPage } from "./admin/view.js";
 import { loadSettings } from "./lib/db.js";
+import { dormantResponse, isDormant } from "./lib/dormant.js";
 import { drainOutbox } from "./lib/drain.js";
 import { ErpNotReadyError } from "./lib/erp.js";
 import { isKillSwitchEngaged, isTestMode, TEST_MODE_ALLOWLIST } from "./lib/guard.js";
@@ -170,6 +174,9 @@ async function healthz(env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // Dormant first: a static answer for every path, before auth, before D1.
+    if (isDormant(env)) return dormantResponse(request);
+
     const denied = await authorize(request, env);
     if (denied) return denied;
 
@@ -218,6 +225,12 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Dormant: wrangler.jsonc ships no cron, but if a stale trigger still
+    // fires, stop here, before any D1 call.
+    if (isDormant(env)) {
+      console.log(JSON.stringify({ event: "cron", dormant: true, cron: event.cron }));
+      return;
+    }
     // Enqueue is cheap (render + inserts); the drain is capped at a handful of
     // messages so the invocation stays inside the free plan's CPU budget.
     ctx.waitUntil(

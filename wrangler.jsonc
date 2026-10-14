@@ -37,11 +37,19 @@
     }
   ],
 
-  // The Worker cron tick. Job rows carry their OWN cron strings; this tick is
-  // only how often the scheduler wakes up to look for due jobs. Ticks are
-  // matched over a lookback window (see src/lib/cron.ts) so a job schedule need
-  // NOT align to a tick boundary. Keep TICK_MINUTES in src/config.ts in sync.
-  "triggers": { "crons": ["*/5 * * * *"] },
+  // DORMANT (see CLAUDE.md "Dormant"). The empty list is deliberate: wrangler
+  // PUTs this list to the Worker's schedules on deploy, so [] DELETES every
+  // cron trigger. Removing the "triggers" key would instead leave the old
+  // */5 trigger running. To wake: restore ["*/5 * * * *"] (the tick; job rows
+  // carry their own cron strings, matched over a lookback window, see
+  // src/lib/cron.ts; keep TICK_MINUTES in src/config.ts in sync) AND set
+  // vars.DORMANT to "off", in the same reviewed commit.
+  "triggers": { "crons": [] },
+
+  // Dormant unless exactly "off": every route answers a static 503 page or
+  // JSON and scheduled() returns before any D1 call. Waking needs the joint
+  // decision of the Sodimo operations lead and the technical lead.
+  "vars": { "DORMANT": "on" },
 
   // SECRETS (never vars, never committed). Set with:
   //   wrangler secret put STRATO_SMTP_PASSWORD   # Strato mailbox rapports@sodimo.eu

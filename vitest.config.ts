@@ -18,6 +18,9 @@ export default defineConfig({
             // fails locally instead of reaching Strato.
             STRATO_SMTP_PASSWORD: "not-a-real-password",
             TRIGGER_TOKEN: "test-token",
+            // wrangler.jsonc ships DORMANT="on". The behaviour suites test the
+            // awake Worker; tests/dormant.test.ts passes its own dormant env.
+            DORMANT: "off",
           },
         },
       };

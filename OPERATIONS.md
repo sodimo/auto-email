@@ -1,5 +1,13 @@
 # Operating auto-email
 
+## Dormant (current state)
+
+auto-email is paused on purpose: every page answers "en sommeil / dormant",
+no cron runs, nothing is read from the database and no email can be sent.
+This is not an outage. Waking it is a joint decision of Sodimo operations and
+the technical lead; the steps and their database cost are in `CLAUDE.md`,
+section "Dormant".
+
 ## Access the administration
 
 Open `https://auto-email.sodimo.eu/` and use the existing Sodimo Cloudflare

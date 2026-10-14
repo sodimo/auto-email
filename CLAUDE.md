@@ -5,6 +5,54 @@ condition-based alerts over Strato SMTP, and files a copy in the mailbox's Sent
 folder over IMAP. **Read SPEC.md first** — it is the contract, and its two hard
 rules are not negotiable. EXTENDING.md walks one new job end to end.
 
+## Dormant
+
+**This Worker is parked on purpose (since 2026-10-14).** `wrangler.jsonc` ships
+`"vars": { "DORMANT": "on" }` and `"triggers": { "crons": [] }`. While dormant:
+
+- every HTTP path and method, HEAD and OPTIONS included (admin UI,
+  `/api/admin/*` including Tester and job runs, `/trigger/*`, `/drain`,
+  `/healthz`, unknown paths) answers a static 503
+  page (HTML for `/`, `/admin` and browsers) or 503 JSON, in French and
+  English, **before authentication and with zero D1 queries**;
+- `scheduled()` returns before any D1 call if a stale trigger ever fires, and
+  `drainOutbox`, `enqueueDueJobs` and `runJobById` refuse the same way;
+- no email can be sent. The D1 `settings.kill_switch` stays engaged as well:
+  never release it as part of waking.
+
+Fail closed: dormant unless `DORMANT` is exactly `off` (`src/lib/dormant.ts`).
+`tests/dormant.test.ts` replaces both D1 bindings with recorders that throw on
+any use and fails if any route or the scheduled handler touches them; it also
+pins the shipped `wrangler.jsonc` to `DORMANT: "on"` and an empty cron list.
+
+Why `crons: []` and not deleting the key: on deploy wrangler PUTs the cron
+list to the Worker's schedules, so an empty list deletes every trigger. A
+missing `triggers` key leaves the old `*/5` trigger running.
+
+**Waking it needs the joint decision of the Sodimo operations lead and the
+technical lead.** An agent never wakes it, and neither does one person
+alone. Once both have decided, in ONE reviewed commit:
+
+1. set `"vars": { "DORMANT": "off" }` in `wrangler.jsonc`;
+2. restore `"triggers": { "crons": ["*/5 * * * *"] }`;
+3. update the two pins in `tests/dormant.test.ts` ("the shipped wrangler.jsonc
+   is dormant") to the awake values; keep the zero-D1 guard tests;
+4. push to `main`, then run the `deploy` workflow by hand (push alone does not
+   deploy while the repo variable `DEPLOY_ENABLED` is unset).
+
+D1 cost of waking (account allowance 5,000,000 reads and 100,000 writes per
+UTC day, shared by every Sodimo Worker): the cron alone, kill switch still
+engaged, reads the 14-row settings table twice per tick, up to about 8,000
+rows a day, 0 writes. Each admin page open or save reads about a dozen ERP
+marker rows plus about 100 rows here. The daily sales digest reads about 400
+rows per run. The Monday overdue review (and every Tester press on it) reads
+about 1.8 million rows, a third of the whole account's day: keep that job
+disabled unless both decision makers accept the cost that day. Each delivered
+message writes about 16 rows per recipient.
+
+To park it again: set `DORMANT` back to `on` and `crons` back to `[]`, push,
+run `deploy`.
+
 ## Commands
 
 Node is not on `PATH` on this NixOS host. Get it from the store, e.g.:
@@ -66,6 +114,7 @@ src/lib/imap-append.ts hand-rolled IMAP APPEND to the discovered \Sent folder
 src/lib/render.ts     {{var}} / {{{var}}} + row table builders
 src/lib/db.ts         typed reads; src/lib/datasource.ts source routing + SQL guard
 src/lib/erp.ts        production-mirror completeness/freshness gate
+src/lib/dormant.ts    DORMANT var: static 503 for every route, no D1, no cron work
 src/lib/job-presets.ts canonical sales-digest and overdue-payment ERP queries
 vendor/worker-mailer/ patched SMTP client (MIT, see its README)
 migrations/           0001 schema through 0008 job-level CC delivery

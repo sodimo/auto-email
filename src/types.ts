@@ -8,6 +8,8 @@ export interface Env {
   STRATO_SMTP_PASSWORD: string;
   /** Shared secret required by every fetch() endpoint. `wrangler secret put`. */
   TRIGGER_TOKEN: string;
+  /** wrangler.jsonc var. Dormant (zero D1, no mail) unless exactly "off". */
+  DORMANT?: string;
 }
 
 export type JobKind = "digest" | "condition";

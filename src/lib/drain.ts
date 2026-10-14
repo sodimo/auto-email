@@ -16,6 +16,7 @@
  * (vendor/worker-mailer#SmtpError.retryable). A failure we cannot place
  * relative to DATA is terminal, because a duplicate would break hard rule 1.
  */
+import { DORMANT_REASON, isDormant } from "./dormant.js";
 import { DEFAULT_DRAIN_BATCH, MAX_DRAIN_BATCH, MAX_SEND_ATTEMPTS, RETRY_BACKOFF_MINUTES } from "../config.js";
 import { loadSettings } from "./db.js";
 import { guardRecipient, guardRun, normalizeEmail } from "./guard.js";
@@ -172,6 +173,10 @@ async function defaultOpenAppender(settings: Settings, env: Env): Promise<SentAp
 
 export async function drainOutbox(env: Env, options: DrainOptions = {}): Promise<DrainSummary> {
   const summary = emptySummary();
+  if (isDormant(env)) {
+    summary.suppressed = DORMANT_REASON;
+    return summary;
+  }
   const settings = await loadSettings(env.DB);
 
   const run = guardRun(settings);
